@@ -1,6 +1,6 @@
-from docx import Document
-
 def fill_rn_docx(template_path, output_path, data):
+    from docx import Document  # 👈 IMPORT AQUI DENTRO (IMPORT LAZY)
+
     doc = Document(template_path)
 
     for table in doc.tables:
