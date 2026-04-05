@@ -20,6 +20,13 @@ st.success("✅ App carregado com sucesso")
 TEMPLATE = "MODELO RN (1).docx"
 
 # =============================
+# NORMALIZAÇÃO
+# =============================
+def _norm(s: str) -> str:
+    s = (s or "").replace("\u2019", "'").replace("\u2018", "'")
+    return re.sub(r"\s+", " ", s).strip()
+
+# =============================
 # STATE (robusto / incremental)
 # =============================
 if "n_locais" not in st.session_state:
@@ -80,7 +87,6 @@ if "cosseguro_data" not in st.session_state:
 if "lmga_data" not in st.session_state:
     st.session_state.lmga_data = []  # será carregado do template
 
-
 # =============================
 # HELPERS
 # =============================
@@ -89,7 +95,6 @@ def safe_rerun():
         st.rerun()
     except Exception:
         st.experimental_rerun()
-
 
 def _sync_lists():
     """Garante que Locais e VR cresçam juntos (sempre)."""
@@ -107,16 +112,13 @@ def _sync_lists():
     elif len(V) > n:
         st.session_state.vr_data = V[:n]
 
-
 def aumentar_locais(mais=10):
     st.session_state.n_locais = int(st.session_state.n_locais) + int(mais)
     _sync_lists()
 
-
 def reduzir_locais(menos=10):
     st.session_state.n_locais = max(10, int(st.session_state.n_locais) - int(menos))
     _sync_lists()
-
 
 # =============================
 # FORMAT HELPERS (R$ e %)
@@ -127,13 +129,11 @@ def format_cnpj(cnpj: str) -> str:
         return f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
     return cnpj
 
-
 def format_cep(cep: str) -> str:
     nums = re.sub(r"\D", "", cep or "")
     if len(nums) == 8:
         return f"{nums[:5]}-{nums[5:]}"
     return cep
-
 
 def viacep_lookup(cep: str) -> str:
     nums = re.sub(r"\D", "", cep or "")
@@ -155,7 +155,6 @@ def viacep_lookup(cep: str) -> str:
     except Exception:
         return ""
 
-
 def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> str:
     parts = []
     base = (endereco_base or "").strip()
@@ -168,7 +167,6 @@ def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> 
     if comp:
         parts.append(comp)
     return " - ".join(parts)
-
 
 def parse_brl_number(val: str) -> float:
     if val is None:
@@ -195,15 +193,12 @@ def parse_brl_number(val: str) -> float:
     except Exception:
         return 0.0
 
-
 def fmt_brl_number(x: float) -> str:
     s = f"{x:,.2f}"
     return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
-
 def fmt_brl_money(x: float) -> str:
     return f"R$ {fmt_brl_number(x)}"
-
 
 def ensure_prefix(v: str) -> str:
     txt = (v or "").strip()
@@ -213,7 +208,6 @@ def ensure_prefix(v: str) -> str:
         return "R$ "
     return "R$ " + txt
 
-
 def format_money_field(key: str):
     raw = ensure_prefix(st.session_state.get(key, ""))
     value = parse_brl_number(raw)
@@ -221,7 +215,6 @@ def format_money_field(key: str):
         st.session_state[key] = "R$ "
     else:
         st.session_state[key] = fmt_brl_money(value)
-
 
 def parse_percent(val: str) -> float:
     if val is None:
@@ -249,24 +242,20 @@ def parse_percent(val: str) -> float:
         return x * 100.0
     return x
 
-
 def fmt_percent_br(p: float) -> str:
     s = f"{p:,.2f}"
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"{s}%"
-
 
 def format_percent_field(key: str):
     raw = st.session_state.get(key, "")
     p = parse_percent(raw)
     st.session_state[key] = "" if p <= 0 else fmt_percent_br(p)
 
-
 # =============================
 # WORD HELPERS
 # =============================
 def set_cell_text(cell, text, paragraph_index=0):
-    """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
     p = cell.paragraphs[paragraph_index]
@@ -277,19 +266,16 @@ def set_cell_text(cell, text, paragraph_index=0):
     else:
         p.add_run(text)
 
-
 def clear_cell_keep_format(cell):
     tc = cell._tc
     for p in list(tc.p_lst):
         tc.remove(p)
-
 
 def replace_in_cell_all(cell, old, new):
     for p in cell.paragraphs:
         for r in p.runs:
             if old in r.text:
                 r.text = r.text.replace(old, new)
-
 
 def find_table(doc, anchor_text):
     a = (anchor_text or "").upper()
@@ -300,14 +286,12 @@ def find_table(doc, anchor_text):
                     return t
     return None
 
-
 def find_row(table, left_label_contains):
     needle = (left_label_contains or "").upper()
     for i, row in enumerate(table.rows):
         if len(row.cells) >= 2 and needle in (row.cells[0].text or "").upper():
             return i
     return None
-
 
 def find_locais_table(doc):
     for t in doc.tables:
@@ -318,7 +302,6 @@ def find_locais_table(doc):
             return t
     return None
 
-
 def find_vr_table(doc):
     for t in doc.tables:
         if len(t.rows) < 2:
@@ -327,7 +310,6 @@ def find_vr_table(doc):
         if ("PRÉDIO" in header) and ("MMU" in header) and ("MMP" in header) and ("LUCROS" in header) and ("LOCAL" in header):
             return t
     return None
-
 
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
     current_rows = len(table.rows)
@@ -340,7 +322,6 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
     for _ in range(target_rows - current_rows):
         new_tr = copy.deepcopy(template_tr)
         table._tbl.append(new_tr)
-
 
 def vr_adjust_rows(table, desired_rows):
     totals_idx = None
@@ -366,7 +347,6 @@ def vr_adjust_rows(table, desired_rows):
             table._tbl.remove(table.rows[remove_idx]._tr)
             totals_idx -= 1
 
-
 # =============================
 # VI - COBERTURAS (do modelo)
 # =============================
@@ -378,7 +358,6 @@ def find_vi_table(doc: Document):
         if ("LOCAIS" in header) and ("GARANTIAS" in header) and ("LMI" in header) and ("FRANQUIA" in header or "POS" in header):
             return t
     return None
-
 
 def extract_vi_from_template():
     doc = Document(TEMPLATE)
@@ -403,10 +382,8 @@ def extract_vi_from_template():
                 items.append({"secao": secao or "Coberturas", "locais": loc, "garantia": gar, "lmi": "R$ ", "pos": pos})
     return items
 
-
 if "coberturas_data" not in st.session_state:
     st.session_state.coberturas_data = extract_vi_from_template()
-
 
 def fill_vi_in_word(doc: Document):
     t = find_vi_table(doc)
@@ -432,20 +409,25 @@ def fill_vi_in_word(doc: Document):
             set_cell_text(r.cells[2], (lmi if (lmi and lmi.strip() != "R$") else ""), 0)
             set_cell_text(r.cells[3], pos or "", 0)
 
-
 # =============================
 # IX - LMGA (Cobertura | Limite (R$))
 # =============================
 def find_lmga_table(doc: Document):
+    candidates = []
     for t in doc.tables:
         if len(t.rows) < 2:
             continue
         header = " ".join(_norm(c.text).upper() for c in t.rows[0].cells)
-        if ("COBERTURA" in header) and ("LIMITE" in header) and ("R$" in header):
-            if len(t.columns) >= 2:
-                return t
-    return None
-
+        if ("COBERTURA" in header) and ("LIMITE" in header):
+            candidates.append(t)
+    if not candidates:
+        return None
+    # prioriza a que tem TOTAL
+    for t in candidates:
+        if any("TOTAL" in _norm(c.text).upper() for row in t.rows for c in row.cells):
+            return t
+    # senão, a maior
+    return max(candidates, key=lambda x: len(x.rows))
 
 def extract_lmga_from_template():
     doc = Document(TEMPLATE)
@@ -464,10 +446,8 @@ def extract_lmga_from_template():
         items.append({"cobertura": cov, "limite": "R$ "})
     return items
 
-
 if not st.session_state.lmga_data:
     st.session_state.lmga_data = extract_lmga_from_template()
-
 
 def fill_lmga_in_word(doc: Document):
     t = find_lmga_table(doc)
@@ -486,7 +466,6 @@ def fill_lmga_in_word(doc: Document):
             lim = mp[cov].get("limite", "R$ ")
             set_cell_text(r.cells[1], (lim if (lim and lim.strip() != "R$") else ""), 0)
 
-
 # =============================
 # COSSEGURO - Word
 # =============================
@@ -498,7 +477,6 @@ def find_cosseguro_table(doc: Document):
         if ("SEGURADORA" in header) and ("SUSEP" in header) and ("PARTICIPA" in header) and ("LMI" in header):
             return t
     return None
-
 
 def cosseguro_adjust_rows(table, desired_rows):
     total_idx = None
@@ -524,7 +502,6 @@ def cosseguro_adjust_rows(table, desired_rows):
             remove_idx = total_idx - 1
             table._tbl.remove(table.rows[remove_idx]._tr)
             total_idx -= 1
-
 
 def fill_cosseguro_in_word(doc: Document):
     t = find_cosseguro_table(doc)
@@ -559,15 +536,14 @@ def fill_cosseguro_in_word(doc: Document):
         set_cell_text(t.cell(row_idx, 2), pct)
         set_cell_text(t.cell(row_idx, 3), (lmi if (lmi and lmi.strip() != "R$") else ""))
 
-
 # =============================
-# GERAR WORD
+# GERAR WORD (usa seu template e preenche tudo)
 # =============================
 def build_docx_bytes():
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
-    # Página 1 - capa
+    # Página 1/2/3 (mantido do seu app)
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -597,7 +573,6 @@ def build_docx_bytes():
         if i is not None:
             set_cell_text(cover.cell(i, 1), f"{int(st.session_state.paginas)} (incluindo esta capa/including the cover page)")
 
-    # Página 1 - cotação
     quote = find_table(doc, "COTAÇÃO:")
     if quote:
         i = find_row(quote, "COTAÇÃO")
@@ -612,7 +587,6 @@ def build_docx_bytes():
         if i is not None and st.session_state.cnpj_p1:
             set_cell_text(quote.cell(i, 1), format_cnpj(st.session_state.cnpj_p1))
 
-    # Página 2 - I Segurado/Cossegurados
     t_seg = find_table(doc, "I – Segurado")
     if t_seg and len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
         set_cell_text(t_seg.cell(1, 0), st.session_state.segurado_p2)
@@ -620,12 +594,10 @@ def build_docx_bytes():
         set_cell_text(t_seg.cell(3, 0), st.session_state.cossegurados)
         set_cell_text(t_seg.cell(3, 1), format_cnpj(st.session_state.cosseg_cnpj))
 
-    # Página 2 - III Atividade Principal
     t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
     if t_iii and len(t_iii.rows) >= 5:
         set_cell_text(t_iii.cell(4, 0), st.session_state.atividade_principal)
 
-    # Página 2 - IV Vigência
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
         cell = t_vig.cell(1, 1)
@@ -635,7 +607,6 @@ def build_docx_bytes():
         p2 = cell.add_paragraph(f"Às 24 horas do dia {st.session_state.vig_fim.strftime('%d/%m/%Y')}")
         p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # Página 2 - V Locais
     t_locais = find_locais_table(doc)
     if t_locais:
         ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
@@ -652,7 +623,6 @@ def build_docx_bytes():
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # Página 3 - VR
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -706,7 +676,7 @@ def build_docx_bytes():
                 except Exception:
                     pass
 
-    # VI / IX / Cosseguro
+    # Novos blocos:
     fill_vi_in_word(doc)
     fill_lmga_in_word(doc)
     fill_cosseguro_in_word(doc)
@@ -714,7 +684,6 @@ def build_docx_bytes():
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
-
 
 # =============================
 # UI TABS
@@ -932,7 +901,6 @@ with tab4:
                 st.markdown(f"### {secao_atual}")
 
             colL, colG, colLMI, colPOS = st.columns([0.8, 3.2, 1.2, 2.2])
-
             colL.text_input("Locais", value=item.get("locais", ""), disabled=True, key=f"vi_loc_{i}")
             colG.text_area("Garantias", value=item.get("garantia", ""), disabled=True, height=55, key=f"vi_gar_{i}")
 
@@ -951,31 +919,24 @@ with tab4:
 with tab5:
     st.subheader("IX – Limite Máximo de Garantia da Apólice (LMGA)")
     st.caption("Preencha o Limite (R$) com o mesmo padrão de moeda das outras páginas.")
-
     if not st.session_state.lmga_data:
         st.warning("Não encontrei a tabela LMGA no modelo.")
     else:
         for i, row in enumerate(st.session_state.lmga_data):
             c1, c2 = st.columns([3.6, 1.4])
             c1.text_input("Cobertura", value=row["cobertura"], disabled=True, key=f"lmga_cov_{i}")
-
             lim_key = f"lmga_lim_{i}"
             st.session_state.setdefault(lim_key, row.get("limite", "R$ "))
             c2.text_input("Limite (R$)", key=lim_key, on_change=format_money_field, args=(lim_key,))
-
             row["limite"] = st.session_state[lim_key]
 
     st.markdown("---")
     st.subheader("Distribuição de Cosseguro")
     st.caption("Participação (%) formata como % e LMI – R$ como moeda.")
 
-    cbtn1, cbtn2 = st.columns([1, 3])
-    with cbtn1:
-        if st.button("➕ +1 linha", key="btn_cosseguro_add"):
-            st.session_state.cosseguro_data.append({"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "})
-            safe_rerun()
-    with cbtn2:
-        st.caption(f"Linhas: {len(st.session_state.cosseguro_data)}")
+    if st.button("➕ +1 linha", key="btn_cosseguro_add"):
+        st.session_state.cosseguro_data.append({"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "})
+        safe_rerun()
 
     h1, h2, h3, h4 = st.columns([2.5, 1.2, 1.2, 1.4])
     h1.markdown("**SEGURADORA**")
@@ -984,7 +945,6 @@ with tab5:
     h4.markdown("**LMI – R$**")
 
     soma_pct = 0.0
-
     for i, row in enumerate(st.session_state.cosseguro_data):
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.4])
 
@@ -1025,3 +985,4 @@ if st.session_state.generated_docx_bytes:
         file_name="RN_preenchido.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+``
