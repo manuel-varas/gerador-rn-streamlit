@@ -5,7 +5,6 @@ import tempfile
 import os
 import json
 import urllib.request
-import urllib.error
 import copy
 
 from docx import Document
@@ -26,9 +25,13 @@ if "n_locais" not in st.session_state:
     st.session_state.n_locais = 10  # padrão inicial
 
 if "locais_data" not in st.session_state:
-    st.session_state.locais_data = [{"cep": "", "endereco": "", "atividade": ""} for _ in range(st.session_state.n_locais)]
+    # cada item: cep, endereco_base, numero, complemento, atividade
+    st.session_state.locais_data = [
+        {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
+        for _ in range(st.session_state.n_locais)
+    ]
 
-# versionador para “recriar” widgets quando o CEP preencher o endereço
+# versionador para permitir atualizar defaults sem mexer em session_state de widgets já montados
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
@@ -38,7 +41,9 @@ def _sync_locais_list():
     n = int(st.session_state.n_locais)
     cur = st.session_state.locais_data
     if len(cur) < n:
-        cur.extend([{"cep": "", "endereco": "", "atividade": ""} for _ in range(n - len(cur))])
+        cur.extend(
+            [{"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""} for _ in range(n - len(cur))]
+        )
     elif len(cur) > n:
         st.session_state.locais_data = cur[:n]
 
@@ -71,13 +76,11 @@ def format_cep(cep: str) -> str:
 
 
 def viacep_lookup(cep: str) -> str:
-    """
-    Busca CEP no ViaCEP.
-    Se não der (sem internet/bloqueio), retorna "" e você preenche manual.
-    """
+    """Busca CEP no ViaCEP. Retorna string base do endereço ou '' se falhar."""
     nums = re.sub(r"\D", "", cep or "")
     if len(nums) != 8:
         return ""
+
     url = f"https://viacep.com.br/ws/{nums}/json/"
     try:
         with urllib.request.urlopen(url, timeout=6) as resp:
@@ -95,6 +98,27 @@ def viacep_lookup(cep: str) -> str:
         return ""
 
 
+def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> str:
+    """Monta no formato: base - Nº xx - complemento"""
+    partes = []
+    base = (endereco_base or "").strip()
+    if base:
+        partes.append(base)
+
+    num = (numero or "").strip()
+    if num:
+        partes.append(f"Nº {num}")
+
+    comp = (complemento or "").strip()
+    if comp:
+        partes.append(comp)
+
+    return " - ".join(partes)
+
+
+# =============================
+# FUNÇÕES WORD
+# =============================
 def set_cell_text(cell, text, paragraph_index=0):
     """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
@@ -109,10 +133,6 @@ def set_cell_text(cell, text, paragraph_index=0):
 
 
 def replace_in_cell_all(cell, old, new, max_replacements=None):
-    """
-    Substitui 'old' por 'new' nos runs da célula.
-    Se max_replacements=1, troca só a primeira ocorrência.
-    """
     count = 0
     for p in cell.paragraphs:
         for r in p.runs:
@@ -147,10 +167,7 @@ def find_row(table, left_label_contains):
 
 
 def find_locais_table(doc):
-    """
-    Acha a tabela que tem cabeçalho: Local | Endereço | Atividade
-    (evita pegar tabela errada só por conter 'Endereço').
-    """
+    """Acha a tabela com cabeçalho Local/Endereço/Atividade."""
     for t in doc.tables:
         if len(t.rows) == 0:
             continue
@@ -161,18 +178,12 @@ def find_locais_table(doc):
 
 
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
-    """
-    Garante header_rows + desired_data_rows linhas.
-    Clona o XML de uma linha modelo para manter estilo.
-    """
     current_rows = len(table.rows)
     target_rows = header_rows + desired_data_rows
     if current_rows >= target_rows:
         return
-
     if template_row_index is None:
         template_row_index = current_rows - 1
-
     template_tr = table.rows[template_row_index]._tr
     for _ in range(target_rows - current_rows):
         new_tr = copy.deepcopy(template_tr)
@@ -180,7 +191,6 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
 
 
 def safe_rerun():
-    """Compatível com versões diferentes do Streamlit."""
     try:
         st.rerun()
     except Exception:
@@ -188,7 +198,7 @@ def safe_rerun():
 
 
 # =============================
-# UI - FORMULÁRIO COM PÁGINAS
+# UI
 # =============================
 if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo {TEMPLATE} não encontrado no repositório")
@@ -198,12 +208,9 @@ tabs = st.tabs(["Página 1 - Capa/Cotação", "Página 2 - Segurado/Vigência/Lo
 
 with st.form("rn_form"):
 
-    # ---------------------------
-    # PÁGINA 1 (mantida)
-    # ---------------------------
+    # ---------- Página 1 ----------
     with tabs[0]:
         col1, col2 = st.columns(2)
-
         with col1:
             rn = st.text_input("PROC. Nº (RN)")
             destinatario = st.text_input("DESTINATÁRIO / To")
@@ -218,17 +225,15 @@ with st.form("rn_form"):
             paginas = st.number_input("PÁGINAS / PAGES", value=13, min_value=1)
             cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
-    # ---------------------------
-    # PÁGINA 2 (NOVO)
-    # ---------------------------
+    # ---------- Página 2 ----------
     with tabs[1]:
         st.subheader("I - Segurado / Cossegurados")
         c1, c2 = st.columns(2)
         with c1:
-            segurado_p2 = st.text_input("Segurado (Página 2)", value=segurado_p1)
+            segurado_p2 = st.text_input("Segurado (Página 2)", value="")
             cossegurados = st.text_input("Cossegurados (Página 2)", value="")
         with c2:
-            cnpj_raw_p2 = st.text_input("CNPJ Segurado (Página 2)", value=cnpj_raw_p1)
+            cnpj_raw_p2 = st.text_input("CNPJ Segurado (Página 2)", value="")
             cosseg_cnpj_raw = st.text_input("CNPJ Cossegurados (Página 2)", value="")
 
         st.subheader("III - Atividade Principal")
@@ -251,52 +256,63 @@ with st.form("rn_form"):
             st.caption(f"Total de locais na interface: {st.session_state.n_locais}")
 
         _sync_locais_list()
+        ver = int(st.session_state.locais_version)
 
-        # Cabeçalho
-        h1, h2, h3, h4, h5 = st.columns([0.6, 1.0, 0.9, 2.5, 2.0])
+        h1, h2, h3, h4, h5, h6, h7 = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
         h1.markdown("**Local**")
         h2.markdown("**CEP**")
         h3.markdown("**Buscar**")
         h4.markdown("**Endereço**")
-        h5.markdown("**Atividade**")
-
-        ver = int(st.session_state.locais_version)
+        h5.markdown("**Nº**")
+        h6.markdown("**Complemento**")
+        h7.markdown("**Atividade**")
 
         for i in range(int(st.session_state.n_locais)):
             row = st.session_state.locais_data[i]
 
-            c_local, c_cep, c_btn, c_end, c_atv = st.columns([0.6, 1.0, 0.9, 2.5, 2.0])
+            c_local, c_cep, c_btn, c_end, c_num, c_comp, c_atv = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
             c_local.write(f"{i+1:02d}")
 
-            # keys versionadas para permitir atualizar o default sem mexer no session_state da key antiga
             cep_key = f"cep_{i}_{ver}"
             end_key = f"end_{i}_{ver}"
+            num_key = f"num_{i}_{ver}"
+            comp_key = f"comp_{i}_{ver}"
             atv_key = f"atv_{i}_{ver}"
 
-            cep_val = c_cep.text_input("", value=row.get("cep",""), key=cep_key, placeholder="00000-000")
-            end_val = c_end.text_input("", value=row.get("endereco",""), key=end_key, placeholder="Rua..., nº..., Bairro..., Cidade-UF")
-            atv_val = c_atv.text_input("", value=row.get("atividade",""), key=atv_key, placeholder="Atividade do local")
+            cep_val = c_cep.text_input("", value=row.get("cep", ""), key=cep_key, placeholder="00000-000")
+            end_val = c_end.text_input("", value=row.get("endereco_base", ""), key=end_key, placeholder="Rua..., Bairro..., Cidade-UF")
+            num_val = c_num.text_input("", value=row.get("numero", ""), key=num_key, placeholder="XX")
+            comp_val = c_comp.text_input("", value=row.get("complemento", ""), key=comp_key, placeholder="Complemento")
+            atv_val = c_atv.text_input("", value=row.get("atividade", ""), key=atv_key, placeholder="Atividade")
 
-            # salvar o que o usuário digitou na lista (persistência)
+            # Persistir digitado
             st.session_state.locais_data[i]["cep"] = cep_val
-            st.session_state.locais_data[i]["endereco"] = end_val
+            st.session_state.locais_data[i]["endereco_base"] = end_val
+            st.session_state.locais_data[i]["numero"] = num_val
+            st.session_state.locais_data[i]["complemento"] = comp_val
             st.session_state.locais_data[i]["atividade"] = atv_val
 
-            # botão de busca por linha (CEP -> endereço)
             if c_btn.button("CEP", key=f"buscar_{i}_{ver}"):
-                end = viacep_lookup(cep_val)
-                if end:
+                base = viacep_lookup(cep_val)
+                if base:
                     st.session_state.locais_data[i]["cep"] = format_cep(cep_val)
-                    st.session_state.locais_data[i]["endereco"] = end
-
-                    # incrementa versionador e re-renderiza os inputs com novos defaults
+                    st.session_state.locais_data[i]["endereco_base"] = base
                     st.session_state.locais_version += 1
                     st.toast(f"CEP {format_cep(cep_val)} encontrado!", icon="✅")
                     safe_rerun()
                 else:
                     st.toast("CEP não encontrado ou sem acesso. Preencha manualmente.", icon="⚠️")
 
+            # Preview do endereço final no padrão pedido
+            endereco_final_preview = montar_endereco_final(
+                st.session_state.locais_data[i]["endereco_base"],
+                st.session_state.locais_data[i]["numero"],
+                st.session_state.locais_data[i]["complemento"],
+            )
+            c_end.caption(endereco_final_preview if endereco_final_preview else "")
+
     submit = st.form_submit_button("Gerar Word")
+
 
 # =============================
 # PROCESSAMENTO (Word)
@@ -328,7 +344,7 @@ if submit:
         "locais": st.session_state.locais_data,
     }
 
-    # ========= PÁGINA 1 (capa) =========
+    # ========= PÁGINA 1 =========
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -375,33 +391,30 @@ if submit:
         if i is not None and data["cnpj_p1"]:
             set_cell_text(quote.cell(i, 1), data["cnpj_p1"])
 
-    # ========= PÁGINA 2 - I (Segurado / Cossegurados) =========
+    # ========= PÁGINA 2 - I =========
     t_seg = find_table(doc, "I – Segurado")
     if t_seg:
-        # Estrutura do modelo: row 1 (vazio) é segurado; row 3 (vazio) é cossegurados [1](https://engage.cloud.microsoft/main/threads/eyJfdHlwZSI6IlRocmVhZCIsImlkIjoiMzQ2ODQ5MjM5OTAyNjE3NyJ9)
         if len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
             set_cell_text(t_seg.cell(1, 0), data["segurado_p2"])
             set_cell_text(t_seg.cell(1, 1), data["cnpj_p2"])
             set_cell_text(t_seg.cell(3, 0), data["cossegurados"])
             set_cell_text(t_seg.cell(3, 1), data["cosseg_cnpj"])
 
-    # ========= PÁGINA 2 - III (Atividade Principal) =========
+    # ========= PÁGINA 2 - III =========
     t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
     if t_iii:
-        # última linha é o campo após "Atividade Principal:" [1](https://engage.cloud.microsoft/main/threads/eyJfdHlwZSI6IlRocmVhZCIsImlkIjoiMzQ2ODQ5MjM5OTAyNjE3NyJ9)
         if len(t_iii.rows) >= 5:
             set_cell_text(t_iii.cell(4, 0), data["atividade_principal"])
 
-    # ========= PÁGINA 2 - IV (Vigência do seguro) =========
+    # ========= PÁGINA 2 - IV =========
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig:
-        # na célula direita tem dois xx/xx/xxxx [1](https://engage.cloud.microsoft/main/threads/eyJfdHlwZSI6IlRocmVhZCIsImlkIjoiMzQ2ODQ5MjM5OTAyNjE3NyJ9)
         if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
             cell = t_vig.cell(1, 1)
             replace_in_cell_all(cell, "xx/xx/xxxx", data["vig_inicio"], max_replacements=1)
             replace_in_cell_all(cell, "xx/xx/xxxx", data["vig_fim"], max_replacements=1)
 
-    # ========= PÁGINA 2 - V (Locais em Risco/VR) =========
+    # ========= PÁGINA 2 - V (Locais) =========
     t_locais = find_locais_table(doc)
     if t_locais:
         desired = len(data["locais"])
@@ -410,11 +423,16 @@ if submit:
         for i in range(desired):
             row_index = 1 + i
             local_num = f"{i+1:02d}"
-            end = (data["locais"][i].get("endereco") or "").strip()
+
+            end_base = (data["locais"][i].get("endereco_base") or "").strip()
+            num = (data["locais"][i].get("numero") or "").strip()
+            comp = (data["locais"][i].get("complemento") or "").strip()
+            endereco_final = montar_endereco_final(end_base, num, comp)
+
             atv = (data["locais"][i].get("atividade") or "").strip()
 
             set_cell_text(t_locais.cell(row_index, 0), local_num)
-            set_cell_text(t_locais.cell(row_index, 1), end)
+            set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
     # ========= SALVAR =========
