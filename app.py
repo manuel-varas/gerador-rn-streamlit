@@ -239,7 +239,7 @@ with st.form("rn_form"):
         st.subheader("III - Atividade Principal")
         atividade_principal = st.text_input("Atividade Principal", value="")
 
-        st.subheader("IV - Vigência do seguro (substitui xx/xx/xxxx)")
+        st.subheader("IV - Vigência do seguro")
         v1, v2 = st.columns(2)
         with v1:
             vig_inicio = st.date_input("Início de vigência", value=date.today(), key="vig_inicio_p2")
@@ -406,15 +406,18 @@ if submit:
         if len(t_iii.rows) >= 5:
             set_cell_text(t_iii.cell(4, 0), data["atividade_principal"])
 
-    # ========= PÁGINA 2 - IV =========
+    # ========= PÁGINA 2 - IV (VIGÊNCIA) =========
+    # CORREÇÃO: reescreve a célula inteira da direita (não depende de run/placeholder quebrado) [1](https://allianzms-my.sharepoint.com/personal/manuel_jobcenterext_allpronet_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B5C5F8899-B4DF-4B52-A5D1-5A3B9D240C78%7D&file=MODELO%20RN%20(1).docx&action=default&mobileredirect=true&DefaultItemOpen=1)
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig:
         if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
-            cell = t_vig.cell(1, 1)
-            replace_in_cell_all(cell, "xx/xx/xxxx", data["vig_inicio"], max_replacements=1)
-            replace_in_cell_all(cell, "xx/xx/xxxx", data["vig_fim"], max_replacements=1)
+            texto_vigencia = (
+                f"Das 24 horas do dia {data['vig_inicio']}\n"
+                f"Às 24 horas do dia {data['vig_fim']}"
+            )
+            set_cell_text(t_vig.cell(1, 1), texto_vigencia)
 
-    # ========= PÁGINA 2 - V (Locais) =========
+    # ========= PÁGINA 2 - V (LOCAIS) =========
     t_locais = find_locais_table(doc)
     if t_locais:
         desired = len(data["locais"])
