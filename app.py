@@ -10,30 +10,36 @@ import copy
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+# =============================
+# CONFIG STREAMLIT
+# =============================
 st.set_page_config(page_title="Gerador RN - Allianz", layout="wide")
 st.title("Gerador de RN - Modelo Word")
 st.success("✅ App carregado com sucesso")
 
 TEMPLATE = "MODELO RN (1).docx"
 
-# -----------------------------
-# SESSION STATE
-# -----------------------------
+# =============================
+# SESSION STATE (tamanho mestre)
+# =============================
 if "n_locais" not in st.session_state:
-    st.session_state.n_locais = 10
+    st.session_state.n_locais = 10  # padrão inicial
 
+# Página 2 (Locais)
 if "locais_data" not in st.session_state:
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
+# Página 3 (VR)
 if "vr_data" not in st.session_state:
     st.session_state.vr_data = [
         {"predio": "", "mmu": "", "mmp": "", "lucros": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
+# Versionador para CEP (evitar erro de session_state ao atualizar campo)
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
@@ -46,6 +52,7 @@ def safe_rerun():
 
 
 def _sync_lists():
+    """Garante que locais_data e vr_data tenham tamanho = n_locais."""
     n = int(st.session_state.n_locais)
 
     L = st.session_state.locais_data
@@ -71,9 +78,16 @@ def reduzir_locais(menos=10):
     _sync_lists()
 
 
-# -----------------------------
+# =============================
 # FORMATAÇÃO / PARSE
-# -----------------------------
+# =============================
+def format_cnpj(cnpj: str) -> str:
+    nums = re.sub(r"\D", "", cnpj or "")
+    if len(nums) == 14:
+        return f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
+    return cnpj
+
+
 def format_cep(cep: str) -> str:
     nums = re.sub(r"\D", "", cep or "")
     if len(nums) == 8:
@@ -173,13 +187,12 @@ def format_vr_input_keep_prefix(key: str):
     if value > 0:
         st.session_state[key] = fmt_brl_money(value)
     else:
-        # se vazio/zero, deixa vazio (se quiser prefixo sempre visível, troque por 'R$ ')
         st.session_state[key] = ""
 
 
-# -----------------------------
+# =============================
 # WORD HELPERS
-# -----------------------------
+# =============================
 def set_cell_text(cell, text, paragraph_index=0):
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
@@ -198,6 +211,13 @@ def clear_cell_keep_format(cell):
         tc.remove(p)
 
 
+def replace_in_cell_all(cell, old, new):
+    for p in cell.paragraphs:
+        for r in p.runs:
+            if old in r.text:
+                r.text = r.text.replace(old, new)
+
+
 def find_table(doc, anchor_text):
     a = anchor_text.upper()
     for t in doc.tables:
@@ -205,6 +225,14 @@ def find_table(doc, anchor_text):
             for c in row.cells:
                 if a in c.text.upper():
                     return t
+    return None
+
+
+def find_row(table, left_label_contains):
+    needle = left_label_contains.upper()
+    for i, row in enumerate(table.rows):
+        if len(row.cells) >= 2 and needle in row.cells[0].text.upper():
+            return i
     return None
 
 
@@ -268,15 +296,16 @@ def vr_adjust_rows(table, desired_rows):
             totals_idx -= 1
 
 
-# -----------------------------
+# =============================
 # UI
-# -----------------------------
+# =============================
 if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo {TEMPLATE} não encontrado no repositório.")
     st.stop()
 
 tabs = st.tabs([
-    "Página 2 - Locais",
+    "Página 1 - Capa/Cotação",
+    "Página 2 - Segurado/Vigência/Locais",
     "Página 3 - Valor em Risco (R$)"
 ])
 
@@ -284,12 +313,36 @@ _sync_lists()
 
 with st.form("rn_form"):
 
-    # =======================
-    # Página 2 - Locais
-    # =======================
+    # -----------------------------
+    # Página 1
+    # -----------------------------
     with tabs[0]:
-        st.subheader("V - Locais em Risco/VR")
+        col1, col2 = st.columns(2)
+        with col1:
+            rn = st.text_input("PROC. Nº (RN)")
+            destinatario = st.text_input("DESTINATÁRIO/To")
+            subscritor = st.text_input("REMETENTE - Subscritor")
+            filial = st.text_input("REMETENTE - Comercial / Filial")
+            segurado_p1 = st.text_input("SEGURADO (Página 1)")
+            cnpj_raw_p1 = st.text_input("CNPJ (Página 1)")
+        with col2:
+            email_user = st.text_input("E-mail (antes do @allianz.com.br)")
+            data_doc = st.date_input("DATA/DATE", value=date.today())
+            paginas = st.number_input("PÁGINAS/PAGES", value=13, min_value=1)
+            cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
+    # -----------------------------
+    # Página 2
+    # -----------------------------
+    with tabs[1]:
+        st.subheader("IV - Vigência do seguro")
+        v1, v2 = st.columns(2)
+        with v1:
+            vig_inicio = st.date_input("Início de vigência", value=date.today(), key="vig_inicio_p2")
+        with v2:
+            vig_fim = st.date_input("Término de vigência", value=date.today(), key="vig_fim_p2")
+
+        st.subheader("V - Locais em Risco/VR")
         b1, b2, b3 = st.columns([1, 1, 2])
         with b1:
             st.button("➕ +10 locais", on_click=aumentar_locais, kwargs={"mais": 10})
@@ -352,10 +405,10 @@ with st.form("rn_form"):
             )
             c_end.caption(endereco_final_preview if endereco_final_preview else "")
 
-    # =======================
-    # Página 3 - VR
-    # =======================
-    with tabs[1]:
+    # -----------------------------
+    # Página 3 - VR (com prefixo R$ no campo)
+    # -----------------------------
+    with tabs[2]:
         st.subheader("Valor em Risco (R$)")
         st.caption("Total DM = Prédio + MMU + MMP | VR Total = DM + Lucros")
 
@@ -438,13 +491,68 @@ with st.form("rn_form"):
 
 
 # -----------------------------
-# GERAR WORD
+# GERAR WORD (página 1/2/3)
 # -----------------------------
 if submit:
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
-    # V - Locais
+    # Página 1 - capa
+    cover = find_table(doc, "PROC. Nº")
+    if cover:
+        i = find_row(cover, "PROC. Nº")
+        if i is not None and rn:
+            set_cell_text(cover.cell(i, 1), f"RN - {rn}")
+
+        i = find_row(cover, "DESTINATÁRIO")
+        if i is not None and destinatario:
+            set_cell_text(cover.cell(i, 1), destinatario)
+
+        i = find_row(cover, "REMETENTE/FROM")
+        if i is not None:
+            if subscritor:
+                set_cell_text(cover.cell(i, 1), subscritor, 0)
+            if filial:
+                set_cell_text(cover.cell(i, 1), filial, 1)
+
+        i = find_row(cover, "DEPTO/DIVISION")
+        if i is not None and email_user:
+            replace_in_cell_all(cover.cell(i, 1), "xxxx.xxxx", email_user)
+
+        i = find_row(cover, "DATA/DATE")
+        if i is not None:
+            set_cell_text(cover.cell(i, 1), data_doc.strftime("%d/%m/%Y"))
+
+        i = find_row(cover, "PÁGINAS/PAGES")
+        if i is not None:
+            set_cell_text(cover.cell(i, 1), f"{paginas} (incluindo esta capa/including the cover page)")
+
+    # Página 1 - cotação
+    quote = find_table(doc, "COTAÇÃO:")
+    if quote:
+        i = find_row(quote, "COTAÇÃO")
+        if i is not None:
+            set_cell_text(quote.cell(i, 1), cotacao)
+
+        i = find_row(quote, "SEGURADO")
+        if i is not None and segurado_p1:
+            set_cell_text(quote.cell(i, 1), segurado_p1)
+
+        i = find_row(quote, "CNPJ")
+        if i is not None and cnpj_raw_p1:
+            set_cell_text(quote.cell(i, 1), format_cnpj(cnpj_raw_p1))
+
+    # Página 2 - Vigência (corrigida)
+    t_vig = find_table(doc, "IV – Vigência do seguro")
+    if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
+        cell = t_vig.cell(1, 1)
+        clear_cell_keep_format(cell)
+        p1 = cell.add_paragraph(f"Das 24 horas do dia {vig_inicio.strftime('%d/%m/%Y')}")
+        p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p2 = cell.add_paragraph(f"Às 24 horas do dia {vig_fim.strftime('%d/%m/%Y')}")
+        p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    # Página 2 - Locais
     t_locais = find_locais_table(doc)
     if t_locais:
         ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
@@ -461,7 +569,7 @@ if submit:
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # VR
+    # Página 3 - VR
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -515,6 +623,7 @@ if submit:
                 except Exception:
                     pass
 
+    # Salvar e baixar
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "RN_preenchido.docx")
         doc.save(output_path)
@@ -525,3 +634,4 @@ if submit:
                 file_name="RN_preenchido.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
+``
