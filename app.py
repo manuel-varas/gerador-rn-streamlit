@@ -8,6 +8,7 @@ import urllib.request
 import copy
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # =============================
 # CONFIG STREAMLIT
@@ -58,6 +59,14 @@ def reduzir_locais(menos=10):
     _sync_locais_list()
 
 
+def safe_rerun():
+    """Compatível com versões diferentes do Streamlit."""
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+
 # =============================
 # FUNÇÕES AUXILIARES
 # =============================
@@ -99,7 +108,7 @@ def viacep_lookup(cep: str) -> str:
 
 
 def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> str:
-    """Monta no formato: base - Nº xx - complemento"""
+    """Monta no formato: base - Nº xx - complemento (tudo no mesmo campo de endereço)."""
     partes = []
     base = (endereco_base or "").strip()
     if base:
@@ -133,6 +142,7 @@ def set_cell_text(cell, text, paragraph_index=0):
 
 
 def replace_in_cell_all(cell, old, new, max_replacements=None):
+    """Substitui texto dentro dos runs da célula."""
     count = 0
     for p in cell.paragraphs:
         for r in p.runs:
@@ -146,6 +156,16 @@ def replace_in_cell_all(cell, old, new, max_replacements=None):
                         if count >= max_replacements:
                             break
     return count
+
+
+def clear_cell_keep_format(cell):
+    """
+    Remove TODOS os parágrafos do conteúdo da célula (mata sobra de xx/xx/xxxx e espaçamento estranho),
+    mantendo a estrutura da célula (bordas/sombreamento).
+    """
+    tc = cell._tc
+    for p in list(tc.p_lst):
+        tc.remove(p)
 
 
 def find_table(doc, anchor_text):
@@ -178,6 +198,10 @@ def find_locais_table(doc):
 
 
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
+    """
+    Garante header_rows + desired_data_rows linhas.
+    Clona o XML da última linha para preservar estilo quando passar de 10 locais.
+    """
     current_rows = len(table.rows)
     target_rows = header_rows + desired_data_rows
     if current_rows >= target_rows:
@@ -188,13 +212,6 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
     for _ in range(target_rows - current_rows):
         new_tr = copy.deepcopy(template_tr)
         table._tbl.append(new_tr)
-
-
-def safe_rerun():
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
 
 
 # =============================
@@ -407,15 +424,19 @@ if submit:
             set_cell_text(t_iii.cell(4, 0), data["atividade_principal"])
 
     # ========= PÁGINA 2 - IV (VIGÊNCIA) =========
-    # CORREÇÃO: reescreve a célula inteira da direita (não depende de run/placeholder quebrado) [1](https://allianzms-my.sharepoint.com/personal/manuel_jobcenterext_allpronet_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B5C5F8899-B4DF-4B52-A5D1-5A3B9D240C78%7D&file=MODELO%20RN%20(1).docx&action=default&mobileredirect=true&DefaultItemOpen=1)
+    # Correção definitiva: limpa conteúdo e recria 2 parágrafos alinhados à esquerda
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig:
         if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
-            texto_vigencia = (
-                f"Das 24 horas do dia {data['vig_inicio']}\n"
-                f"Às 24 horas do dia {data['vig_fim']}"
-            )
-            set_cell_text(t_vig.cell(1, 1), texto_vigencia)
+            cell = t_vig.cell(1, 1)
+
+            clear_cell_keep_format(cell)
+
+            p1 = cell.add_paragraph(f"Das 24 horas do dia {data['vig_inicio']}")
+            p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+            p2 = cell.add_paragraph(f"Às 24 horas do dia {data['vig_fim']}")
+            p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     # ========= PÁGINA 2 - V (LOCAIS) =========
     t_locais = find_locais_table(doc)
@@ -450,3 +471,4 @@ if submit:
                 file_name="RN_preenchido.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
+``
