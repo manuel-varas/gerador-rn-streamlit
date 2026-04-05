@@ -23,23 +23,23 @@ TEMPLATE = "MODELO RN (1).docx"
 # SESSION STATE (tamanho mestre)
 # =============================
 if "n_locais" not in st.session_state:
-    st.session_state.n_locais = 10
+    st.session_state.n_locais = 10  # padrão inicial
 
-# Locais (Página 2)
+# Página 2 (Locais)
 if "locais_data" not in st.session_state:
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
-# VR (Página 3)
+# Página 3 (VR)
 if "vr_data" not in st.session_state:
     st.session_state.vr_data = [
         {"predio": "", "mmu": "", "mmp": "", "lucros": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
-# Versionador para CEP (evitar erro de session_state em widgets)
+# Versionador para CEP (evitar erro de session_state ao atualizar campo)
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
@@ -55,7 +55,6 @@ def _sync_lists():
     """Garante que locais_data e vr_data tenham tamanho = n_locais."""
     n = int(st.session_state.n_locais)
 
-    # locais_data
     curL = st.session_state.locais_data
     if len(curL) < n:
         curL.extend(
@@ -64,7 +63,6 @@ def _sync_lists():
     elif len(curL) > n:
         st.session_state.locais_data = curL[:n]
 
-    # vr_data
     curV = st.session_state.vr_data
     if len(curV) < n:
         curV.extend([{"predio": "", "mmu": "", "mmp": "", "lucros": ""} for _ in range(n - len(curV))])
@@ -135,35 +133,24 @@ def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> 
 
 
 def parse_brl_number(val: str) -> float:
-    """
-    Aceita:
-      1234
-      1.234,56
-      1234,56
-      1,234.56 (converte também)
-    Retorna float.
-    """
+    """Converte strings BR/EN para float."""
     if val is None:
         return 0.0
     s = str(val).strip()
     if not s:
         return 0.0
-    # remove R$ e espaços
     s = s.replace("R$", "").replace(" ", "")
-    # se tem vírgula e ponto, assume BR (ponto milhar, vírgula decimal) se a última vírgula vier depois do último ponto
+
     if "," in s and "." in s:
+        # decide pelo último separador
         if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
+            s = s.replace(".", "").replace(",", ".")  # BR
         else:
-            s = s.replace(",", "")
+            s = s.replace(",", "")  # EN
     else:
-        # só vírgula -> decimal BR
         if "," in s:
-            s = s.replace(".", "").replace(",", ".")
-        # só ponto -> decimal EN
-        else:
-            # deixa ponto como decimal
-            pass
+            s = s.replace(".", "").replace(",", ".")  # BR
+
     try:
         return float(s)
     except Exception:
@@ -171,7 +158,6 @@ def parse_brl_number(val: str) -> float:
 
 
 def fmt_brl_money(x: float) -> str:
-    """R$ 1.234.567,89"""
     s = f"{x:,.2f}"
     s = s.replace(",", "X").replace(".", ",").replace("X", ".")
     return f"R$ {s}"
@@ -217,6 +203,7 @@ def find_row(table, left_label_contains):
 
 
 def find_locais_table(doc):
+    """Tabela Local/Endereço/Atividade (Página 2)."""
     for t in doc.tables:
         if len(t.rows) == 0:
             continue
@@ -229,7 +216,8 @@ def find_locais_table(doc):
 def find_vr_table(doc):
     """
     Acha a tabela VR pela linha de cabeçalho que contém:
-    Local, Prédio, MMU, MMP e Lucros Cessantes
+    Local, Prédio, MMU, MMP e Lucros Cessantes.
+    No modelo há um título mesclado na linha 0 e cabeçalho na linha 1. [1](https://allianzms-my.sharepoint.com/personal/elaine_escudero_allianz_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B02AE6111-F266-41F8-9095-065BF5B4F5FD%7D&file=Carta%20RN_Nova%20Lei.docx&action=default&mobileredirect=true&DefaultItemOpen=1)
     """
     for t in doc.tables:
         if len(t.rows) < 2:
@@ -241,6 +229,7 @@ def find_vr_table(doc):
 
 
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
+    """Garante linhas mantendo estilo (clonando a última linha)."""
     current_rows = len(table.rows)
     target_rows = header_rows + desired_data_rows
     if current_rows >= target_rows:
@@ -255,30 +244,26 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
 
 def vr_adjust_rows(table, desired_rows):
     """
-    Garante que a tabela VR tenha exatamente desired_rows linhas de dados (01..N),
-    inserindo ou removendo linhas ANTES da linha 'Totais'.
+    Ajusta linhas de dados na tabela VR (01..N) inserindo/removendo antes do 'Totais'. [1](https://allianzms-my.sharepoint.com/personal/elaine_escudero_allianz_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B02AE6111-F266-41F8-9095-065BF5B4F5FD%7D&file=Carta%20RN_Nova%20Lei.docx&action=default&mobileredirect=true&DefaultItemOpen=1)
     """
-    # acha linha "Totais"
     totals_idx = None
     for i, row in enumerate(table.rows):
         if any("TOTAIS" in c.text.upper() for c in row.cells):
             totals_idx = i
             break
     if totals_idx is None:
-        return  # não achou, não mexe
+        return
 
-    data_start = 2  # row0: título (mesclado), row1: cabeçalho
+    data_start = 2  # row0: título, row1: cabeçalho
     current_data = totals_idx - data_start
 
-    # adicionar
     if desired_rows > current_data:
-        template_tr = table.rows[totals_idx - 1]._tr  # última linha de dados atual
+        template_tr = table.rows[totals_idx - 1]._tr
         for _ in range(desired_rows - current_data):
             new_tr = copy.deepcopy(template_tr)
             table._tbl.insert(totals_idx, new_tr)
             totals_idx += 1
 
-    # remover
     elif desired_rows < current_data:
         for _ in range(current_data - desired_rows):
             remove_idx = totals_idx - 1
@@ -325,17 +310,7 @@ with st.form("rn_form"):
     # Página 2
     # =======================
     with tabs[1]:
-        st.subheader("I - Segurado / Cossegurados")
-        c1, c2 = st.columns(2)
-        with c1:
-            segurado_p2 = st.text_input("Segurado (Página 2)", value="")
-            cossegurados = st.text_input("Cossegurados (Página 2)", value="")
-        with c2:
-            cnpj_raw_p2 = st.text_input("CNPJ Segurado (Página 2)", value="")
-            cosseg_cnpj_raw = st.text_input("CNPJ Cossegurados (Página 2)", value="")
-
-        st.subheader("III - Atividade Principal")
-        atividade_principal = st.text_input("Atividade Principal", value="")
+        st.subheader("Página 2 - Segurado/Vigência/Locais")
 
         st.subheader("IV - Vigência do seguro")
         v1, v2 = st.columns(2)
@@ -351,7 +326,7 @@ with st.form("rn_form"):
         with b2:
             st.button("➖ -10 locais", on_click=reduzir_locais, kwargs={"menos": 10})
         with b3:
-            st.caption(f"Total de locais no app: {st.session_state.n_locais}")
+            st.caption(f"Total de locais (Locais/VR): {st.session_state.n_locais}")
 
         _sync_lists()
         ver = int(st.session_state.locais_version)
@@ -408,16 +383,24 @@ with st.form("rn_form"):
             c_end.caption(endereco_final_preview if endereco_final_preview else "")
 
     # =======================
-    # Página 3 - VR
+    # Página 3 - VR (com +10/-10 aqui também)
     # =======================
     with tabs[2]:
         st.subheader("Valor em Risco (R$)")
         st.caption("Total Danos Materiais = Prédio + MMU + MMP. Valor em Risco Total = DM + Lucros.")
 
+        # ✅ CORREÇÃO PEDIDA: botões também na Página 3
+        bb1, bb2, bb3 = st.columns([1, 1, 2])
+        with bb1:
+            st.button("➕ +10 linhas VR", on_click=aumentar_locais, kwargs={"mais": 10})
+        with bb2:
+            st.button("➖ -10 linhas VR", on_click=reduzir_locais, kwargs={"menos": 10})
+        with bb3:
+            st.caption(f"Total de linhas (Locais/VR): {st.session_state.n_locais}")
+
         _sync_lists()
         n = int(st.session_state.n_locais)
 
-        # Cabeçalho
         c0, c1, c2, c3, c4, c5 = st.columns([0.6, 1.2, 1.2, 1.2, 1.3, 1.4])
         c0.markdown("**Local**")
         c1.markdown("**Prédio (R$)**")
@@ -443,10 +426,8 @@ with st.form("rn_form"):
             mmu  = parse_brl_number(mmu_s)
             mmp  = parse_brl_number(mmp_s)
             luc  = parse_brl_number(luc_s)
-
             dm = pred + mmu + mmp
 
-            # persistir digitado (texto)
             st.session_state.vr_data[i]["predio"] = pred_s
             st.session_state.vr_data[i]["mmu"] = mmu_s
             st.session_state.vr_data[i]["mmp"] = mmp_s
@@ -476,49 +457,30 @@ with st.form("rn_form"):
 
 
 # =============================
-# PROCESSAMENTO (Word)
+# GERAR WORD
 # =============================
 if submit:
     doc = Document(TEMPLATE)
 
     data = {
-        "rn": rn,
-        "destinatario": destinatario,
-        "subscritor": subscritor,
-        "filial": filial,
-        "email_user": email_user,
-        "data": data_doc.strftime("%d/%m/%Y"),
-        "paginas": str(paginas),
-        "cotacao": cotacao,
-        "segurado_p1": segurado_p1,
-        "cnpj_p1": format_cnpj(cnpj_raw_p1),
-
-        "segurado_p2": segurado_p2,
-        "cnpj_p2": format_cnpj(cnpj_raw_p2),
-        "cossegurados": cossegurados,
-        "cosseg_cnpj": format_cnpj(cosseg_cnpj_raw),
-        "atividade_principal": atividade_principal,
         "vig_inicio": vig_inicio.strftime("%d/%m/%Y"),
         "vig_fim": vig_fim.strftime("%d/%m/%Y"),
-
+        "n_locais": int(st.session_state.n_locais),
         "locais": st.session_state.locais_data,
         "vr": st.session_state.vr_data,
-        "n_locais": int(st.session_state.n_locais),
     }
 
-    # -------- Página 2 - Vigência (corrigida) --------
+    # IV - Vigência (corrigida)
     t_vig = find_table(doc, "IV – Vigência do seguro")
-    if t_vig:
-        if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
-            cell = t_vig.cell(1, 1)
-            clear_cell_keep_format(cell)
+    if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
+        cell = t_vig.cell(1, 1)
+        clear_cell_keep_format(cell)
+        p1 = cell.add_paragraph(f"Das 24 horas do dia {data['vig_inicio']}")
+        p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p2 = cell.add_paragraph(f"Às 24 horas do dia {data['vig_fim']}")
+        p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-            p1 = cell.add_paragraph(f"Das 24 horas do dia {data['vig_inicio']}")
-            p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p2 = cell.add_paragraph(f"Às 24 horas do dia {data['vig_fim']}")
-            p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-    # -------- Página 2 - Locais --------
+    # V - Locais
     t_locais = find_locais_table(doc)
     if t_locais:
         desired = data["n_locais"]
@@ -527,35 +489,31 @@ if submit:
         for i in range(desired):
             row_index = 1 + i
             local_num = f"{i+1:02d}"
-
             end_base = (data["locais"][i].get("endereco_base") or "").strip()
             num = (data["locais"][i].get("numero") or "").strip()
             comp = (data["locais"][i].get("complemento") or "").strip()
             endereco_final = montar_endereco_final(end_base, num, comp)
-
             atv = (data["locais"][i].get("atividade") or "").strip()
 
             set_cell_text(t_locais.cell(row_index, 0), local_num)
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # -------- Página 3 - VR --------
+    # Página 3 - VR
     t_vr = find_vr_table(doc)
     if t_vr:
         desired = data["n_locais"]
         vr_adjust_rows(t_vr, desired)
 
-        # localizar novamente Totais
         totals_idx = None
         for i, row in enumerate(t_vr.rows):
             if any("TOTAIS" in c.text.upper() for c in row.cells):
                 totals_idx = i
                 break
 
-        data_start = 2  # row0: título mesclado, row1: cabeçalho
+        data_start = 2
         total_pred = total_mmu = total_mmp = total_dm = total_luc = 0.0
 
-        # preencher linhas de dados
         for i in range(desired):
             row_idx = data_start + i
             local_num = f"{i+1:02d}"
@@ -572,7 +530,6 @@ if submit:
             total_dm += dm
             total_luc += luc
 
-            # colunas: 0 Local, 1 Prédio, 2 MMU, 3 MMP, 4 Total DM, 5 Lucros
             set_cell_text(t_vr.cell(row_idx, 0), local_num)
             set_cell_text(t_vr.cell(row_idx, 1), fmt_brl_money(pred))
             set_cell_text(t_vr.cell(row_idx, 2), fmt_brl_money(mmu))
@@ -580,7 +537,6 @@ if submit:
             set_cell_text(t_vr.cell(row_idx, 4), fmt_brl_money(dm))
             set_cell_text(t_vr.cell(row_idx, 5), fmt_brl_money(luc))
 
-        # preencher Totais
         if totals_idx is not None:
             set_cell_text(t_vr.cell(totals_idx, 1), fmt_brl_money(total_pred))
             set_cell_text(t_vr.cell(totals_idx, 2), fmt_brl_money(total_mmu))
@@ -588,7 +544,6 @@ if submit:
             set_cell_text(t_vr.cell(totals_idx, 4), fmt_brl_money(total_dm))
             set_cell_text(t_vr.cell(totals_idx, 5), fmt_brl_money(total_luc))
 
-            # VR total (linha seguinte)
             vr_total = total_dm + total_luc
             vr_total_row = totals_idx + 1
             # tenta escrever na última célula (mesclada pode variar)
@@ -600,11 +555,10 @@ if submit:
                 except Exception:
                     pass
 
-    # -------- SALVAR --------
+    # Salvar e baixar
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "RN_preenchido.docx")
         doc.save(output_path)
-
         with open(output_path, "rb") as f:
             st.download_button(
                 "⬇️ Baixar RN preenchido",
