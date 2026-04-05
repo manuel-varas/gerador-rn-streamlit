@@ -21,7 +21,7 @@ st.success("✅ App carregado com sucesso")
 TEMPLATE = "MODELO RN (1).docx"
 
 # =============================
-# STATE (robusto, incremental)
+# STATE (robusto / incremental)
 # =============================
 if "n_locais" not in st.session_state:
     st.session_state.n_locais = 10
@@ -29,39 +29,28 @@ if "n_locais" not in st.session_state:
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
-# Página 2: locais
 if "locais_data" not in st.session_state:
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
-# Página 3: VR
 if "vr_data" not in st.session_state:
     st.session_state.vr_data = [
         {"predio": "R$ ", "mmu": "R$ ", "mmp": "R$ ", "lucros": "R$ "}
         for _ in range(st.session_state.n_locais)
     ]
 
-# Página 2: campos I / III (voltando)
-if "segurado_p2" not in st.session_state:
-    st.session_state.segurado_p2 = ""
-if "cnpj_p2" not in st.session_state:
-    st.session_state.cnpj_p2 = ""
-if "cossegurados" not in st.session_state:
-    st.session_state.cossegurados = ""
-if "cosseg_cnpj" not in st.session_state:
-    st.session_state.cosseg_cnpj = ""
-if "atividade_principal" not in st.session_state:
-    st.session_state.atividade_principal = ""
+# Página 2 (I/III) — voltou e fica no state
+for k in ["segurado_p2", "cnpj_p2", "cossegurados", "cosseg_cnpj", "atividade_principal"]:
+    if k not in st.session_state:
+        st.session_state[k] = ""
 
-# Vigência
 if "vig_inicio" not in st.session_state:
     st.session_state.vig_inicio = date.today()
 if "vig_fim" not in st.session_state:
     st.session_state.vig_fim = date.today()
 
-# Output gerado
 if "generated_docx_bytes" not in st.session_state:
     st.session_state.generated_docx_bytes = None
 
@@ -139,17 +128,17 @@ def viacep_lookup(cep: str) -> str:
 
 
 def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> str:
-    partes = []
+    parts = []
     base = (endereco_base or "").strip()
     if base:
-        partes.append(base)
+        parts.append(base)
     num = (numero or "").strip()
     if num:
-        partes.append(f"Nº {num}")
+        parts.append(f"Nº {num}")
     comp = (complemento or "").strip()
     if comp:
-        partes.append(comp)
-    return " - ".join(partes)
+        parts.append(comp)
+    return " - ".join(parts)
 
 
 def parse_brl_number(val: str) -> float:
@@ -199,12 +188,10 @@ def ensure_prefix(v: str) -> str:
 def format_money_field(key: str):
     raw = ensure_prefix(st.session_state.get(key, ""))
     value = parse_brl_number(raw)
-
     if raw.strip() == "R$" or raw.strip() == "":
         st.session_state[key] = "R$ "
-        return
-
-    st.session_state[key] = fmt_brl_money(value)
+    else:
+        st.session_state[key] = fmt_brl_money(value)
 
 
 # =============================
@@ -315,7 +302,7 @@ def build_docx_bytes(inputs):
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
-    # ---------- Página 1: Capa ----------
+    # Página 1: capa
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -345,7 +332,7 @@ def build_docx_bytes(inputs):
         if i is not None:
             set_cell_text(cover.cell(i, 1), f"{inputs['paginas']} (incluindo esta capa/including the cover page)")
 
-    # ---------- Página 1: Cotação ----------
+    # Página 1: cotação
     quote = find_table(doc, "COTAÇÃO:")
     if quote:
         i = find_row(quote, "COTAÇÃO")
@@ -360,7 +347,7 @@ def build_docx_bytes(inputs):
         if i is not None and inputs["cnpj_p1"]:
             set_cell_text(quote.cell(i, 1), format_cnpj(inputs["cnpj_p1"]))
 
-    # ---------- Página 2: I – Segurado / Cossegurados (voltou) ----------
+    # Página 2: I – Segurado / Cossegurados (voltou)
     t_seg = find_table(doc, "I – Segurado")
     if t_seg and len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
         set_cell_text(t_seg.cell(1, 0), inputs["segurado_p2"])
@@ -368,23 +355,22 @@ def build_docx_bytes(inputs):
         set_cell_text(t_seg.cell(3, 0), inputs["cossegurados"])
         set_cell_text(t_seg.cell(3, 1), format_cnpj(inputs["cosseg_cnpj"]))
 
-    # ---------- Página 2: III – Atividade Principal (voltou) ----------
+    # Página 2: III – Atividade Principal (voltou)
     t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
     if t_iii and len(t_iii.rows) >= 5:
         set_cell_text(t_iii.cell(4, 0), inputs["atividade_principal"])
 
-    # ---------- Página 2: IV – Vigência ----------
+    # Página 2: IV – Vigência (limpa + 2 parágrafos)
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
         cell = t_vig.cell(1, 1)
         clear_cell_keep_format(cell)
-
         p1 = cell.add_paragraph(f"Das 24 horas do dia {inputs['vig_inicio'].strftime('%d/%m/%Y')}")
         p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
         p2 = cell.add_paragraph(f"Às 24 horas do dia {inputs['vig_fim'].strftime('%d/%m/%Y')}")
         p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # ---------- Página 2: V – Locais ----------
+    # Página 2: V – Locais
     t_locais = find_locais_table(doc)
     if t_locais:
         ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
@@ -401,7 +387,7 @@ def build_docx_bytes(inputs):
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # ---------- Página 3: VR ----------
+    # Página 3: VR
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -476,35 +462,37 @@ tabs = st.tabs([
 _sync_lists()
 
 # ---------------------------
-# PÁGINA 1
+# TAB 1 - Página 1
 # ---------------------------
-with tabsc1, c2 = st.columns(2)
-    with c1:
+with tabs[0]:
+    col1, col2 = st.columns(2)
+    with col1:
         rn = st.text_input("PROC. Nº (RN)")
         destinatario = st.text_input("DESTINATÁRIO / To")
         subscritor = st.text_input("REMETENTE - Subscritor")
         filial = st.text_input("REMETENTE - Comercial / Filial")
         segurado_p1 = st.text_input("SEGURADO (Página 1)")
         cnpj_p1 = st.text_input("CNPJ (Página 1)")
-    with c2:
+    with col2:
         email_user = st.text_input("E-mail (antes do @allianz.com.br)")
         data_doc = st.date_input("DATA / DATE", value=date.today())
         paginas = st.number_input("PÁGINAS / PAGES", value=13, min_value=1)
         cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
 # ---------------------------
-# PÁGINA 2 (I + III + IV + V)
+# TAB 2 - Página 2 (I + III + IV + V)
 # ---------------------------
-with tabsst.subheader("I - Segurado / Cossegurados")
-    p2c1, p2c2 = st.columns(2)
-    with p2c1:
+with tabs[1]:
+    st.subheader("I - Segurado / Cossegurados (voltou)")
+    c1, c2 = st.columns(2)
+    with c1:
         st.session_state.segurado_p2 = st.text_input("Segurado", value=st.session_state.segurado_p2)
         st.session_state.cossegurados = st.text_input("Cossegurados", value=st.session_state.cossegurados)
-    with p2c2:
+    with c2:
         st.session_state.cnpj_p2 = st.text_input("CNPJ Segurado", value=st.session_state.cnpj_p2)
         st.session_state.cosseg_cnpj = st.text_input("CNPJ Cossegurados", value=st.session_state.cosseg_cnpj)
 
-    st.subheader("III - Atividade Principal")
+    st.subheader("III - Atividade Principal (voltou)")
     st.session_state.atividade_principal = st.text_input("Atividade Principal", value=st.session_state.atividade_principal)
 
     st.subheader("IV - Vigência do seguro")
@@ -537,6 +525,7 @@ with tabsst.subheader("I - Segurado / Cossegurados")
 
     for i in range(int(st.session_state.n_locais)):
         row = st.session_state.locais_data[i]
+
         c_local, c_cep, c_btn, c_end, c_num, c_comp, c_atv = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
         c_local.write(f"{i+1:02d}")
 
@@ -577,9 +566,10 @@ with tabsst.subheader("I - Segurado / Cossegurados")
         c_end.caption(endereco_final_preview if endereco_final_preview else "")
 
 # ---------------------------
-# PÁGINA 3 (VR)
+# TAB 3 - Página 3 (VR)
 # ---------------------------
-with tabsst.subheader("Valor em Risco (R$)")
+with tabs[2]:
+    st.subheader("Valor em Risco (R$)")
     st.caption("Total DM = Prédio + MMU + MMP | VR Total = DM + Lucros")
 
     bb1, bb2, bb3 = st.columns([1, 1, 2])
@@ -654,7 +644,7 @@ with tabsst.subheader("Valor em Risco (R$)")
     st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
 
 # =============================
-# GERAR WORD (sempre incremental)
+# GERAR / BAIXAR
 # =============================
 st.markdown("---")
 if st.button("✅ Gerar Word"):
