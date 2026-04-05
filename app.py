@@ -1,7 +1,6 @@
 import streamlit as st
 import re
 from datetime import date
-import tempfile
 import os
 import json
 import urllib.request
@@ -72,6 +71,16 @@ if "data_doc" not in st.session_state:
 
 if "generated_docx_bytes" not in st.session_state:
     st.session_state.generated_docx_bytes = None
+
+# =============================
+# COSSEGURO (Página 9)
+# =============================
+if "cosseguro_data" not in st.session_state:
+    # começa com Allianz + 1 linha em branco (e você pode adicionar mais)
+    st.session_state.cosseguro_data = [
+        {"seguradora": "Allianz Seguros S.A.", "susep": "05177", "pct": "100,00%", "lmi": "R$ "},
+        {"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "},
+    ]
 
 
 # =============================
@@ -216,11 +225,57 @@ def format_money_field(key: str):
         st.session_state[key] = fmt_brl_money(value)
 
 
+# -------- % helpers --------
+def parse_percent(val: str) -> float:
+    """
+    Aceita: 40 | 40,0 | 40,00 | 40% | 40,00% | 0,4
+    Retorna percent em escala 0-100.
+    """
+    if val is None:
+        return 0.0
+    s = str(val).strip().replace(" ", "")
+    if not s:
+        return 0.0
+    s = s.replace("%", "")
+
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+
+    try:
+        x = float(s)
+    except Exception:
+        return 0.0
+
+    if 0 < x <= 1:
+        return x * 100.0
+    return x
+
+
+def fmt_percent_br(p: float) -> str:
+    s = f"{p:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{s}%"
+
+
+def format_percent_field(key: str):
+    raw = st.session_state.get(key, "")
+    p = parse_percent(raw)
+    if p <= 0:
+        st.session_state[key] = ""
+    else:
+        st.session_state[key] = fmt_percent_br(p)
+
+
 # =============================
 # WORD HELPERS
 # =============================
 def set_cell_text(cell, text, paragraph_index=0):
-    """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
     p = cell.paragraphs[paragraph_index]
@@ -322,16 +377,14 @@ def vr_adjust_rows(table, desired_rows):
 
 
 # =============================
-# VI - COBERTURAS (extração do modelo + preenchimento no Word)
+# VI - COBERTURAS (do modelo)
 # =============================
 def _norm(s: str) -> str:
     s = (s or "").replace("\u2019", "'").replace("\u2018", "'")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def find_vi_table(doc: Document):
-    """Encontra a tabela VI pela linha de cabeçalho (Locais/Garantias/LMI/POS)."""
     for t in doc.tables:
         if len(t.rows) < 2:
             continue
@@ -342,40 +395,26 @@ def find_vi_table(doc: Document):
 
 
 def extract_vi_from_template():
-    """Transcreve automaticamente Locais/Garantias do próprio MODELO RN (1).docx."""
     doc = Document(TEMPLATE)
     t = find_vi_table(doc)
     if not t:
         return []
-
     items = []
     secao = ""
-
     for r in t.rows[1:]:
-        # algumas linhas são "Garantia Básica" / "Garantias Adicionais" com colunas mescladas
-        row_text_all = " ".join(_norm(c.text) for c in r.cells)
-        if "GARANTIA BÁSICA" in row_text_all.upper():
+        alltxt = " ".join(_norm(c.text) for c in r.cells)
+        if "GARANTIA BÁSICA" in alltxt.upper():
             secao = "Garantia Básica"
             continue
-        if "GARANTIAS ADICIONAIS" in row_text_all.upper():
+        if "GARANTIAS ADICIONAIS" in alltxt.upper():
             secao = "Garantias Adicionais"
             continue
-
-        if len(r.cells) < 4:
-            continue
-
-        loc = _norm(r.cells[0].text)
-        gar = _norm(r.cells[1].text)
-        pos = _norm(r.cells[3].text)
-
-        if loc and gar:
-            items.append({
-                "secao": secao or "Coberturas",
-                "locais": loc,
-                "garantia": gar,
-                "lmi": "R$ ",
-                "pos": pos
-            })
+        if len(r.cells) >= 4:
+            loc = _norm(r.cells[0].text)
+            gar = _norm(r.cells[1].text)
+            pos = _norm(r.cells[3].text)
+            if loc and gar:
+                items.append({"secao": secao or "Coberturas", "locais": loc, "garantia": gar, "lmi": "R$ ", "pos": pos})
     return items
 
 
@@ -384,12 +423,10 @@ if "coberturas_data" not in st.session_state:
 
 
 def fill_vi_in_word(doc: Document):
-    """Preenche LMI e POS/Franquia na tabela VI do Word, mantendo Locais/Garantias."""
     t = find_vi_table(doc)
     if not t:
         return
 
-    # map por garantia (normalizada). Se houver duplicata, usa a primeira.
     cov_map = {}
     for item in st.session_state.coberturas_data:
         key = _norm(item.get("garantia"))
@@ -399,23 +436,94 @@ def fill_vi_in_word(doc: Document):
     for r in t.rows:
         if len(r.cells) < 4:
             continue
-
         gar = _norm(r.cells[1].text)
         if not gar:
             continue
-
         if gar in cov_map:
             item = cov_map[gar]
             lmi = item.get("lmi", "R$ ")
             pos = item.get("pos", "")
-
-            # escreve nas colunas 2 e 3
             set_cell_text(r.cells[2], (lmi if (lmi and lmi.strip() != "R$") else ""), 0)
             set_cell_text(r.cells[3], pos or "", 0)
 
 
 # =============================
-# GERAÇÃO DO WORD (mantém o que já funciona + adiciona VI)
+# COSSEGURO - WORD
+# =============================
+def find_cosseguro_table(doc: Document):
+    for t in doc.tables:
+        if len(t.rows) < 2:
+            continue
+        header = " ".join((c.text or "").strip().upper() for c in t.rows[0].cells)
+        if ("SEGURADORA" in header) and ("SUSEP" in header) and ("PARTICIPA" in header) and ("LMI" in header):
+            return t
+    return None
+
+
+def cosseguro_adjust_rows(table, desired_rows):
+    total_idx = None
+    for i, row in enumerate(table.rows):
+        row_txt = " ".join((c.text or "").strip().upper() for c in row.cells)
+        if "TOTAL" in row_txt:
+            total_idx = i
+            break
+    if total_idx is None:
+        return
+
+    header_rows = 1
+    current_data = total_idx - header_rows
+
+    if desired_rows > current_data:
+        template_tr = table.rows[total_idx - 1]._tr
+        for _ in range(desired_rows - current_data):
+            new_tr = copy.deepcopy(template_tr)
+            table._tbl.insert(total_idx, new_tr)
+            total_idx += 1
+    elif desired_rows < current_data:
+        for _ in range(current_data - desired_rows):
+            remove_idx = total_idx - 1
+            table._tbl.remove(table.rows[remove_idx]._tr)
+            total_idx -= 1
+
+
+def fill_cosseguro_in_word(doc: Document):
+    t = find_cosseguro_table(doc)
+    if not t:
+        return
+
+    data = st.session_state.cosseguro_data
+    desired = len(data)
+
+    cosseguro_adjust_rows(t, desired)
+
+    # achar novamente total
+    total_idx = None
+    for i, row in enumerate(t.rows):
+        row_txt = " ".join((c.text or "").strip().upper() for c in row.cells)
+        if "TOTAL" in row_txt:
+            total_idx = i
+            break
+    if total_idx is None:
+        return
+
+    for i in range(desired):
+        row_idx = 1 + i
+        if row_idx >= total_idx:
+            break
+
+        seg = data[i].get("seguradora", "")
+        susep = data[i].get("susep", "")
+        pct = data[i].get("pct", "")
+        lmi = data[i].get("lmi", "")
+
+        set_cell_text(t.cell(row_idx, 0), seg)
+        set_cell_text(t.cell(row_idx, 1), susep)
+        set_cell_text(t.cell(row_idx, 2), pct)
+        set_cell_text(t.cell(row_idx, 3), (lmi if (lmi and lmi.strip() != "R$") else ""))
+
+
+# =============================
+# GERAÇÃO DO WORD
 # =============================
 def build_docx_bytes():
     doc = Document(TEMPLATE)
@@ -560,8 +668,11 @@ def build_docx_bytes():
                 except Exception:
                     pass
 
-    # ✅ NOVO: VI Coberturas — preenche LMI e POS na tabela do Word
+    # VI - Coberturas (LMI e POS)
     fill_vi_in_word(doc)
+
+    # Distribuição de Cosseguro
+    fill_cosseguro_in_word(doc)
 
     bio = io.BytesIO()
     doc.save(bio)
@@ -575,11 +686,12 @@ if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo '{TEMPLATE}' não encontrado no repositório.")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Página 1 - Capa/Cotação",
     "Página 2 - Segurado/Vigência/Locais",
     "Página 3 - Valor em Risco (R$)",
-    "Páginas 4–8 - Coberturas (VI)"
+    "Páginas 4–8 - Coberturas (VI)",
+    "Página 9 - Distribuição de Cosseguro"
 ])
 
 _sync_lists()
@@ -771,13 +883,13 @@ with tab3:
     vr_total = total_dm + total_luc
     st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
 
-# -------- NOVO: Páginas 4–8 (VI) --------
+# -------- VI Coberturas --------
 with tab4:
     st.subheader("VI - Coberturas, Limites e Franquias por Evento e Local")
-    st.caption("Locais e Garantias foram transcritos automaticamente do modelo. Preencha LMI (R$) e POS/Franquia. [1](https://allianzms-my.sharepoint.com/personal/manuel_jobcenterext_allpronet_com_br/_layouts/15/Doc.aspx?sourcedoc=%7BECB0E7C2-B90E-4D7A-9EB9-DD473A22F216%7D&file=MODELO%20RN%20(1).docx&action=default&mobileredirect=true)")
+    st.caption("Locais e Garantias foram transcritos automaticamente do modelo. Preencha LMI (R$) e POS/Franquia.")
 
     if not st.session_state.coberturas_data:
-        st.error("Não consegui localizar a tabela VI no modelo. Verifique se a tabela contém as colunas Locais / Garantias / LMI / POS.")
+        st.error("Não encontrei a tabela VI no modelo.")
     else:
         secao_atual = None
         for i, item in enumerate(st.session_state.coberturas_data):
@@ -800,9 +912,61 @@ with tab4:
                 st.session_state[pos_key] = item.get("pos", "")
             colPOS.text_area("POS/Franquia (R$ / Por Evento)", key=pos_key, height=55)
 
-            # persistir
             item["lmi"] = st.session_state[lmi_key]
             item["pos"] = st.session_state[pos_key]
+
+# -------- Página 9 Cosseguro --------
+with tab5:
+    st.subheader("Distribuição de Cosseguro")
+    st.caption("Participação (%) formata como % e LMI – R$ como moeda.")
+
+    cbtn1, cbtn2 = st.columns([1, 3])
+    with cbtn1:
+        if st.button("➕ +1 linha", key="btn_cosseguro_add"):
+            st.session_state.cosseguro_data.append({"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "})
+            safe_rerun()
+    with cbtn2:
+        st.caption(f"Linhas: {len(st.session_state.cosseguro_data)}")
+
+    h1, h2, h3, h4 = st.columns([2.5, 1.2, 1.2, 1.4])
+    h1.markdown("**SEGURADORA**")
+    h2.markdown("**Código SUSEP**")
+    h3.markdown("**Participação (%)**")
+    h4.markdown("**LMI – R$**")
+
+    soma_pct = 0.0
+
+    for i, row in enumerate(st.session_state.cosseguro_data):
+        c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.4])
+
+        seg_key = f"cos_seg_{i}"
+        sus_key = f"cos_sus_{i}"
+        pct_key = f"cos_pct_{i}"
+        lmi_key = f"cos_lmi_{i}"
+
+        if seg_key not in st.session_state:
+            st.session_state[seg_key] = row.get("seguradora", "")
+        if sus_key not in st.session_state:
+            st.session_state[sus_key] = row.get("susep", "")
+        if pct_key not in st.session_state:
+            st.session_state[pct_key] = row.get("pct", "")
+        if lmi_key not in st.session_state:
+            st.session_state[lmi_key] = row.get("lmi", "R$ ")
+
+        seg = c1.text_input("", key=seg_key)
+        sus = c2.text_input("", key=sus_key)
+        pct = c3.text_input("", key=pct_key, on_change=format_percent_field, args=(pct_key,))
+        lmi = c4.text_input("", key=lmi_key, on_change=format_money_field, args=(lmi_key,))
+
+        row["seguradora"] = seg
+        row["susep"] = sus
+        row["pct"] = st.session_state[pct_key]
+        row["lmi"] = st.session_state[lmi_key]
+
+        soma_pct += parse_percent(row["pct"])
+
+    st.markdown("---")
+    st.markdown(f"**Total informado:** {fmt_percent_br(soma_pct)} (no Word, a linha Total permanece 100%).")
 
 # -------- Gerar / Baixar --------
 st.markdown("---")
