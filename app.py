@@ -20,7 +20,7 @@ st.success("✅ App carregado com sucesso")
 TEMPLATE = "MODELO RN (1).docx"
 
 # =============================
-# NORMALIZAÇÃO
+# NORMALIZAÇÃO (SEM norm() — SÓ _norm())
 # =============================
 def _norm(s: str) -> str:
     s = (s or "").replace("\u2019", "'").replace("\u2018", "'")
@@ -256,6 +256,7 @@ def format_percent_field(key: str):
 # WORD HELPERS
 # =============================
 def set_cell_text(cell, text, paragraph_index=0):
+    """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
     p = cell.paragraphs[paragraph_index]
@@ -341,6 +342,7 @@ def vr_adjust_rows(table, desired_rows):
             new_tr = copy.deepcopy(template_tr)
             table._tbl.insert(totals_idx, new_tr)
             totals_idx += 1
+
     elif desired_rows < current_data:
         for _ in range(current_data - desired_rows):
             remove_idx = totals_idx - 1
@@ -410,9 +412,10 @@ def fill_vi_in_word(doc: Document):
             set_cell_text(r.cells[3], pos or "", 0)
 
 # =============================
-# IX - LMGA (Cobertura | Limite (R$))
+# IX - LMGA (Cobertura | Limite (R$)) — CORRIGIDO (SEM norm())
 # =============================
 def find_lmga_table(doc: Document):
+    # procura uma tabela com "Cobertura" e "Limite" no cabeçalho
     candidates = []
     for t in doc.tables:
         if len(t.rows) < 2:
@@ -422,11 +425,12 @@ def find_lmga_table(doc: Document):
             candidates.append(t)
     if not candidates:
         return None
-    # prioriza a que tem TOTAL
+    # prioriza a que contém "TOTAL"
     for t in candidates:
-        if any("TOTAL" in _norm(c.text).upper() for row in t.rows for c in row.cells):
+        alltxt = " ".join(_norm(c.text).upper() for row in t.rows for c in row.cells)
+        if "TOTAL" in alltxt:
             return t
-    # senão, a maior
+    # fallback: pega a maior
     return max(candidates, key=lambda x: len(x.rows))
 
 def extract_lmga_from_template():
@@ -497,6 +501,7 @@ def cosseguro_adjust_rows(table, desired_rows):
             new_tr = copy.deepcopy(template_tr)
             table._tbl.insert(total_idx, new_tr)
             total_idx += 1
+
     elif desired_rows < current_data:
         for _ in range(current_data - desired_rows):
             remove_idx = total_idx - 1
@@ -537,13 +542,13 @@ def fill_cosseguro_in_word(doc: Document):
         set_cell_text(t.cell(row_idx, 3), (lmi if (lmi and lmi.strip() != "R$") else ""))
 
 # =============================
-# GERAR WORD (usa seu template e preenche tudo)
+# GERAR WORD (mantém seu fluxo)
 # =============================
 def build_docx_bytes():
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
-    # Página 1/2/3 (mantido do seu app)
+    # mantém o preenchimento já existente (capa/cotação, seg/cosseg, vigência, locais, VR)
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -676,7 +681,7 @@ def build_docx_bytes():
                 except Exception:
                     pass
 
-    # Novos blocos:
+    # VI / IX / Cosseguro
     fill_vi_in_word(doc)
     fill_lmga_in_word(doc)
     fill_cosseguro_in_word(doc)
@@ -882,7 +887,6 @@ with tab3:
     t3.markdown(f"**{fmt_brl_money(total_mmp)}**")
     t4.markdown(f"**{fmt_brl_money(total_dm)}**")
     t5.markdown(f"**{fmt_brl_money(total_luc)}**")
-
     vr_total = total_dm + total_luc
     st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
 
@@ -901,6 +905,7 @@ with tab4:
                 st.markdown(f"### {secao_atual}")
 
             colL, colG, colLMI, colPOS = st.columns([0.8, 3.2, 1.2, 2.2])
+
             colL.text_input("Locais", value=item.get("locais", ""), disabled=True, key=f"vi_loc_{i}")
             colG.text_area("Garantias", value=item.get("garantia", ""), disabled=True, height=55, key=f"vi_gar_{i}")
 
@@ -919,12 +924,14 @@ with tab4:
 with tab5:
     st.subheader("IX – Limite Máximo de Garantia da Apólice (LMGA)")
     st.caption("Preencha o Limite (R$) com o mesmo padrão de moeda das outras páginas.")
+
     if not st.session_state.lmga_data:
         st.warning("Não encontrei a tabela LMGA no modelo.")
     else:
         for i, row in enumerate(st.session_state.lmga_data):
             c1, c2 = st.columns([3.6, 1.4])
             c1.text_input("Cobertura", value=row["cobertura"], disabled=True, key=f"lmga_cov_{i}")
+
             lim_key = f"lmga_lim_{i}"
             st.session_state.setdefault(lim_key, row.get("limite", "R$ "))
             c2.text_input("Limite (R$)", key=lim_key, on_change=format_money_field, args=(lim_key,))
@@ -934,9 +941,13 @@ with tab5:
     st.subheader("Distribuição de Cosseguro")
     st.caption("Participação (%) formata como % e LMI – R$ como moeda.")
 
-    if st.button("➕ +1 linha", key="btn_cosseguro_add"):
-        st.session_state.cosseguro_data.append({"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "})
-        safe_rerun()
+    cbtn1, cbtn2 = st.columns([1, 3])
+    with cbtn1:
+        if st.button("➕ +1 linha", key="btn_cosseguro_add"):
+            st.session_state.cosseguro_data.append({"seguradora": "", "susep": "", "pct": "", "lmi": "R$ "})
+            safe_rerun()
+    with cbtn2:
+        st.caption(f"Linhas: {len(st.session_state.cosseguro_data)}")
 
     h1, h2, h3, h4 = st.columns([2.5, 1.2, 1.2, 1.4])
     h1.markdown("**SEGURADORA**")
@@ -985,4 +996,3 @@ if st.session_state.generated_docx_bytes:
         file_name="RN_preenchido.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
-``
