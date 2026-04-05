@@ -1,83 +1,100 @@
-# app.py
-import streamlit as st
-import re
-from datetime import date
-import tempfile
-import os
+# rn_fill.py
+# VERSÃO: RN_FILL_V2_RIGHT_ONLY_2026-04-04
 
-st.set_page_config(page_title="Gerador RN – Allianz", layout="wide")
-st.title("Gerador de RN – Modelo Word")
-st.success("✅ App carregou (se você está vendo isso, o script está rodando).")
+def fill_rn_docx(template_path, output_path, data):
+    from docx import Document
 
-def format_cnpj(cnpj: str) -> str:
-    nums = re.sub(r"\D", "", cnpj or "")
-    if len(nums) == 14:
-        return f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
-    return cnpj
+    doc = Document(template_path)
 
-try:
-    from rn_fill import fill_rn_docx
-except Exception as e:
-    st.error("Erro ao importar rn_fill.py")
-    st.exception(e)
-    st.stop()
+    # ---------- helpers ----------
+    def set_paragraph_text_preserve(paragraph, text):
+        if paragraph.runs:
+            paragraph.runs[0].text = text
+            for r in paragraph.runs[1:]:
+                r.text = ""
+        else:
+            paragraph.add_run(text)
 
-TEMPLATE = "MODELO RN (1).docx"
-if not os.path.exists(TEMPLATE):
-    st.error(f"Não encontrei o arquivo do modelo: {TEMPLATE}")
-    st.info("Confirme se o arquivo está no repositório com esse nome EXATO.")
-    st.stop()
+    def set_cell_text_preserve(cell, text, p_index=0):
+        while len(cell.paragraphs) <= p_index:
+            cell.add_paragraph("")
+        set_paragraph_text_preserve(cell.paragraphs[p_index], text)
 
-with st.form("rn_form"):
-    col1, col2 = st.columns(2)
+    def replace_in_cell_runs(cell, old, new):
+        for p in cell.paragraphs:
+            for r in p.runs:
+                if old in r.text:
+                    r.text = r.text.replace(old, new)
 
-    with col1:
-        rn = st.text_input("PROC. Nº (RN)", value="")
-        destinatario = st.text_input("DESTINATÁRIO/To", value="")
-        subscritor = st.text_input("REMETENTE/FROM - Subscritor", value="")
-        filial = st.text_input("REMETENTE/FROM - Comercial/Filial", value="")
-        segurado = st.text_input("SEGURADO", value="")
-        cnpj_raw = st.text_input("CNPJ (digite números ou com pontuação)", value="")
+    def find_table_by_anchor(anchor_text):
+        a = anchor_text.upper()
+        for t in doc.tables:
+            for row in t.rows:
+                for c in row.cells:
+                    if a in c.text.upper():
+                        return t
+        return None
 
-    with col2:
-        email_user = st.text_input("E-mail (antes do @allianz.com.br)", value="")
-        data_doc = st.date_input("DATA/DATE", value=date.today())
-        paginas = st.number_input("PÁGINAS/PAGES", min_value=1, max_value=200, value=13, step=1)
-        cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
+    def find_row_index_by_left_label(table, label_contains):
+        needle = label_contains.upper()
+        for idx, row in enumerate(table.rows):
+            if len(row.cells) >= 2 and needle in row.cells[0].text.upper():
+                return idx
+        return None
 
-    submit = st.form_submit_button("Gerar Word")
+    # ---------- CAPA ----------
+    cover = find_table_by_anchor("PROC. Nº")
+    if cover and len(cover.columns) >= 2:
+        # PROC / RN
+        i = find_row_index_by_left_label(cover, "PROC. Nº")
+        if i is not None and data.get("rn"):
+            set_cell_text_preserve(cover.cell(i, 1), f"RN - {data['rn']}")
 
-if submit:
-    cnpj_fmt = format_cnpj(cnpj_raw)
-    data_fmt = data_doc.strftime("%d/%m/%Y")
+        # DESTINATÁRIO
+        i = find_row_index_by_left_label(cover, "DESTINATÁRIO")
+        if i is not None and data.get("destinatario"):
+            set_cell_text_preserve(cover.cell(i, 1), data["destinatario"])
 
-    st.caption(f"📌 Data formatada: **{data_fmt}** | CNPJ formatado: **{cnpj_fmt}**")
+        # REMETENTE (2 linhas na célula da direita)
+        i = find_row_index_by_left_label(cover, "REMETENTE")
+        if i is not None:
+            if data.get("subscritor"):
+                set_cell_text_preserve(cover.cell(i, 1), data["subscritor"], 0)
+            if data.get("filial"):
+                set_cell_text_preserve(cover.cell(i, 1), data["filial"], 1)
 
-    data = {
-        "rn": rn,
-        "destinatario": destinatario,
-        "subscritor": subscritor,
-        "filial": filial,
-        "email_user": email_user,
-        "data": data_fmt,
-        "paginas": str(paginas),
-        "cotacao": cotacao,
-        "segurado": segurado,
-        "cnpj": cnpj_fmt,
-    }
+        # DEPTO/DIVISION (só troca o xxxx.xxxx)
+        i = find_row_index_by_left_label(cover, "DEPTO/DIVISION")
+        if i is not None and data.get("email_user"):
+            replace_in_cell_runs(cover.cell(i, 1), "xxxx.xxxx", data["email_user"])
 
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            out_docx = os.path.join(tmp, "RN_preenchido.docx")
-            fill_rn_docx(TEMPLATE, out_docx, data)
+        # DATA/DATE
+        i = find_row_index_by_left_label(cover, "DATA/DATE")
+        if i is not None and data.get("data"):
+            set_cell_text_preserve(cover.cell(i, 1), data["data"])
 
-            with open(out_docx, "rb") as f:
-                st.download_button(
-                    "⬇️ Baixar RN preenchido",
-                    data=f,
-                    file_name="RN_preenchido.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-    except Exception as e:
-        st.error("Erro ao preencher o Word (rn_fill.py)")
-        st.exception(e)
+        # PÁGINAS/PAGES
+        i = find_row_index_by_left_label(cover, "PÁGINAS/PAGES")
+        if i is not None and data.get("paginas"):
+            set_cell_text_preserve(
+                cover.cell(i, 1),
+                f"{data['paginas']} (incluindo esta capa/including the cover page)"
+            )
+
+    # ---------- COTAÇÃO ----------
+    quote = find_table_by_anchor("COTAÇÃO:")
+    if quote and len(quote.columns) >= 2:
+        i = find_row_index_by_left_label(quote, "COTAÇÃO")
+        if i is not None:
+            set_cell_text_preserve(quote.cell(i, 1), data.get("cotacao", "Riscos Nomeados"))
+
+        i = find_row_index_by_left_label(quote, "SEGURADO")
+        if i is not None and data.get("segurado"):
+            set_cell_text_preserve(quote.cell(i, 1), data["segurado"])
+
+        i = find_row_index_by_left_label(quote, "CNPJ")
+        if i is not None and data.get("cnpj"):
+            set_cell_text_preserve(quote.cell(i, 1), data["cnpj"])
+
+    doc.save(output_path)
+``
