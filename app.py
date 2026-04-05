@@ -1,109 +1,83 @@
-# rn_fill.py
-# Preenche SOMENTE as células da direita, preservando os rótulos e a formatação do Word.
+# app.py
+import streamlit as st
+import re
+from datetime import date
+import tempfile
+import os
 
-def fill_rn_docx(template_path, output_path, data):
-    from docx import Document
+st.set_page_config(page_title="Gerador RN – Allianz", layout="wide")
+st.title("Gerador de RN – Modelo Word")
+st.success("✅ App carregou (se você está vendo isso, o script está rodando).")
 
-    doc = Document(template_path)
+def format_cnpj(cnpj: str) -> str:
+    nums = re.sub(r"\D", "", cnpj or "")
+    if len(nums) == 14:
+        return f"{nums[:2]}.{nums[2:5]}.{nums[5:8]}/{nums[8:12]}-{nums[12:]}"
+    return cnpj
 
-    # ---------- Helpers (preservar formatação/runs) ----------
-    def set_paragraph_text_preserve(paragraph, text):
-        """
-        Define o texto no 1º run do parágrafo e zera os demais runs,
-        preservando estilo do parágrafo/célula.
-        """
-        if paragraph.runs:
-            paragraph.runs[0].text = text
-            for r in paragraph.runs[1:]:
-                r.text = ""
-        else:
-            paragraph.add_run(text)
+try:
+    from rn_fill import fill_rn_docx
+except Exception as e:
+    st.error("Erro ao importar rn_fill.py")
+    st.exception(e)
+    st.stop()
 
-    def set_cell_line(cell, line_text, paragraph_index=0):
-        """
-        Escreve em um parágrafo específico da célula (sem mexer na coluna esquerda).
-        """
-        # garante parágrafos suficientes
-        while len(cell.paragraphs) <= paragraph_index:
-            cell.add_paragraph("")
-        set_paragraph_text_preserve(cell.paragraphs[paragraph_index], line_text)
+TEMPLATE = "MODELO RN (1).docx"
+if not os.path.exists(TEMPLATE):
+    st.error(f"Não encontrei o arquivo do modelo: {TEMPLATE}")
+    st.info("Confirme se o arquivo está no repositório com esse nome EXATO.")
+    st.stop()
 
-    def replace_in_cell_runs(cell, old, new):
-        """
-        Substitui texto dentro dos runs existentes, preservando formatação (ideal p/ xxxx.xxxx).
-        """
-        for p in cell.paragraphs:
-            for r in p.runs:
-                if old in r.text:
-                    r.text = r.text.replace(old, new)
+with st.form("rn_form"):
+    col1, col2 = st.columns(2)
 
-    def find_table_by_anchor(anchor_text):
-        """
-        Encontra uma tabela que contenha o anchor_text em qualquer célula.
-        """
-        a = anchor_text.upper()
-        for t in doc.tables:
-            for row in t.rows:
-                for c in row.cells:
-                    if a in c.text.upper():
-                        return t
-        return None
+    with col1:
+        rn = st.text_input("PROC. Nº (RN)", value="")
+        destinatario = st.text_input("DESTINATÁRIO/To", value="")
+        subscritor = st.text_input("REMETENTE/FROM - Subscritor", value="")
+        filial = st.text_input("REMETENTE/FROM - Comercial/Filial", value="")
+        segurado = st.text_input("SEGURADO", value="")
+        cnpj_raw = st.text_input("CNPJ (digite números ou com pontuação)", value="")
 
-    # ---------- 1) CAPA (tabela com PROC. Nº / DESTINATÁRIO / REMETENTE / DATA / PÁGINAS) ----------
-    # No seu modelo, essa tabela existe e tem os rótulos na coluna esquerda. [2](https://allianzms-my.sharepoint.com/personal/ana_araujo1_allianz_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B2954F353-592E-49FB-945A-F5D4715A0C2B%7D&file=MODELO%20RN.docx&action=default&mobileredirect=true&DefaultItemOpen=1)[3](https://allianzms-my.sharepoint.com/personal/manuel_jobcenterext_allpronet_com_br/_layouts/15/Doc.aspx?sourcedoc=%7BECB0E7C2-B90E-4D7A-9EB9-DD473A22F216%7D&file=MODELO%20RN%20(1).docx&action=default&mobileredirect=true&DefaultItemOpen=1)
-    cover = find_table_by_anchor("PROC. Nº")
-    if cover and len(cover.rows) >= 6 and len(cover.columns) >= 2:
-        rn = (data.get("rn") or "").strip()
-        destinatario = (data.get("destinatario") or "").strip()
-        subscritor = (data.get("subscritor") or "").strip()
-        filial = (data.get("filial") or "").strip()
-        email_user = (data.get("email_user") or "").strip()
-        data_doc = (data.get("data") or "").strip()
-        pages = (data.get("paginas") or "").strip()
+    with col2:
+        email_user = st.text_input("E-mail (antes do @allianz.com.br)", value="")
+        data_doc = st.date_input("DATA/DATE", value=date.today())
+        paginas = st.number_input("PÁGINAS/PAGES", min_value=1, max_value=200, value=13, step=1)
+        cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
-        # RN (linha 0, coluna direita)
-        if rn:
-            set_cell_line(cover.cell(0, 1), f"RN - {rn}", 0)
+    submit = st.form_submit_button("Gerar Word")
 
-        # Destinatário (linha 1, coluna direita)
-        if destinatario:
-            set_cell_line(cover.cell(1, 1), destinatario, 0)
+if submit:
+    cnpj_fmt = format_cnpj(cnpj_raw)
+    data_fmt = data_doc.strftime("%d/%m/%Y")
 
-        # Remetente/FROM (linha 2, coluna direita) -> DUAS LINHAS
-        # Mantém o rótulo REMETENTE/FROM na coluna esquerda intacto.
-        if subscritor:
-            set_cell_line(cover.cell(2, 1), subscritor, 0)
-        if filial:
-            set_cell_line(cover.cell(2, 1), filial, 1)
+    st.caption(f"📌 Data formatada: **{data_fmt}** | CNPJ formatado: **{cnpj_fmt}**")
 
-        # E-mail: troca só o placeholder "xxxx.xxxx" dentro dos runs, sem destruir layout
-        if email_user:
-            replace_in_cell_runs(cover.cell(3, 1), "xxxx.xxxx", email_user)
+    data = {
+        "rn": rn,
+        "destinatario": destinatario,
+        "subscritor": subscritor,
+        "filial": filial,
+        "email_user": email_user,
+        "data": data_fmt,
+        "paginas": str(paginas),
+        "cotacao": cotacao,
+        "segurado": segurado,
+        "cnpj": cnpj_fmt,
+    }
 
-        # Data (linha 4, coluna direita)
-        if data_doc:
-            set_cell_line(cover.cell(4, 1), data_doc, 0)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_docx = os.path.join(tmp, "RN_preenchido.docx")
+            fill_rn_docx(TEMPLATE, out_docx, data)
 
-        # Páginas (linha 5, coluna direita) -> mantém o sufixo padrão
-        if pages:
-            set_cell_line(
-                cover.cell(5, 1),
-                f"{pages} (incluindo esta capa/including the cover page)",
-                0
-            )
-
-    # ---------- 2) TABELA DE COTAÇÃO (COTAÇÃO / SEGURADO / CNPJ) ----------
-    quote = find_table_by_anchor("COTAÇÃO:")
-    if quote and len(quote.rows) >= 3 and len(quote.columns) >= 2:
-        cotacao = (data.get("cotacao") or "Riscos Nomeados").strip()
-        segurado = (data.get("segurado") or "").strip()
-        cnpj = (data.get("cnpj") or "").strip()
-
-        # Preenche SOMENTE a coluna direita (col 1). A esquerda fica intacta.
-        set_cell_line(quote.cell(0, 1), cotacao, 0)   # COTAÇÃO
-        if segurado:
-            set_cell_line(quote.cell(1, 1), segurado, 0)  # SEGURADO
-        if cnpj:
-            set_cell_line(quote.cell(2, 1), cnpj, 0)      # CNPJ
-
-    doc.save(output_path)
+            with open(out_docx, "rb") as f:
+                st.download_button(
+                    "⬇️ Baixar RN preenchido",
+                    data=f,
+                    file_name="RN_preenchido.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+    except Exception as e:
+        st.error("Erro ao preencher o Word (rn_fill.py)")
+        st.exception(e)
