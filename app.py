@@ -220,6 +220,7 @@ def format_money_field(key: str):
 # WORD HELPERS
 # =============================
 def set_cell_text(cell, text, paragraph_index=0):
+    """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
     p = cell.paragraphs[paragraph_index]
@@ -245,19 +246,19 @@ def replace_in_cell_all(cell, old, new):
 
 
 def find_table(doc, anchor_text):
-    a = anchor_text.upper()
+    a = (anchor_text or "").upper()
     for t in doc.tables:
         for row in t.rows:
             for c in row.cells:
-                if a in c.text.upper():
+                if a in (c.text or "").upper():
                     return t
     return None
 
 
 def find_row(table, left_label_contains):
-    needle = left_label_contains.upper()
+    needle = (left_label_contains or "").upper()
     for i, row in enumerate(table.rows):
-        if len(row.cells) >= 2 and needle in row.cells[0].text.upper():
+        if len(row.cells) >= 2 and needle in (row.cells[0].text or "").upper():
             return i
     return None
 
@@ -266,7 +267,7 @@ def find_locais_table(doc):
     for t in doc.tables:
         if len(t.rows) == 0:
             continue
-        header = " ".join(c.text.strip().upper() for c in t.rows[0].cells)
+        header = " ".join((c.text or "").strip().upper() for c in t.rows[0].cells)
         if ("LOCAL" in header) and ("ENDEREÇO" in header) and ("ATIVIDADE" in header) and len(t.columns) >= 3:
             return t
     return None
@@ -276,7 +277,7 @@ def find_vr_table(doc):
     for t in doc.tables:
         if len(t.rows) < 2:
             continue
-        header = " ".join(c.text.strip().upper() for c in t.rows[1].cells)
+        header = " ".join((c.text or "").strip().upper() for c in t.rows[1].cells)
         if ("PRÉDIO" in header) and ("MMU" in header) and ("MMP" in header) and ("LUCROS" in header) and ("LOCAL" in header):
             return t
     return None
@@ -298,7 +299,7 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
 def vr_adjust_rows(table, desired_rows):
     totals_idx = None
     for i, row in enumerate(table.rows):
-        if any("TOTAIS" in c.text.upper() for c in row.cells):
+        if any("TOTAIS" in (c.text or "").upper() for c in row.cells):
             totals_idx = i
             break
     if totals_idx is None:
@@ -320,6 +321,102 @@ def vr_adjust_rows(table, desired_rows):
             totals_idx -= 1
 
 
+# =============================
+# VI - COBERTURAS (extração do modelo + preenchimento no Word)
+# =============================
+def _norm(s: str) -> str:
+    s = (s or "").replace("\u2019", "'").replace("\u2018", "'")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def find_vi_table(doc: Document):
+    """Encontra a tabela VI pela linha de cabeçalho (Locais/Garantias/LMI/POS)."""
+    for t in doc.tables:
+        if len(t.rows) < 2:
+            continue
+        header = " ".join(_norm(c.text).upper() for c in t.rows[0].cells)
+        if ("LOCAIS" in header) and ("GARANTIAS" in header) and ("LMI" in header) and ("FRANQUIA" in header or "POS" in header):
+            return t
+    return None
+
+
+def extract_vi_from_template():
+    """Transcreve automaticamente Locais/Garantias do próprio MODELO RN (1).docx."""
+    doc = Document(TEMPLATE)
+    t = find_vi_table(doc)
+    if not t:
+        return []
+
+    items = []
+    secao = ""
+
+    for r in t.rows[1:]:
+        # algumas linhas são "Garantia Básica" / "Garantias Adicionais" com colunas mescladas
+        row_text_all = " ".join(_norm(c.text) for c in r.cells)
+        if "GARANTIA BÁSICA" in row_text_all.upper():
+            secao = "Garantia Básica"
+            continue
+        if "GARANTIAS ADICIONAIS" in row_text_all.upper():
+            secao = "Garantias Adicionais"
+            continue
+
+        if len(r.cells) < 4:
+            continue
+
+        loc = _norm(r.cells[0].text)
+        gar = _norm(r.cells[1].text)
+        pos = _norm(r.cells[3].text)
+
+        if loc and gar:
+            items.append({
+                "secao": secao or "Coberturas",
+                "locais": loc,
+                "garantia": gar,
+                "lmi": "R$ ",
+                "pos": pos
+            })
+    return items
+
+
+if "coberturas_data" not in st.session_state:
+    st.session_state.coberturas_data = extract_vi_from_template()
+
+
+def fill_vi_in_word(doc: Document):
+    """Preenche LMI e POS/Franquia na tabela VI do Word, mantendo Locais/Garantias."""
+    t = find_vi_table(doc)
+    if not t:
+        return
+
+    # map por garantia (normalizada). Se houver duplicata, usa a primeira.
+    cov_map = {}
+    for item in st.session_state.coberturas_data:
+        key = _norm(item.get("garantia"))
+        if key and key not in cov_map:
+            cov_map[key] = item
+
+    for r in t.rows:
+        if len(r.cells) < 4:
+            continue
+
+        gar = _norm(r.cells[1].text)
+        if not gar:
+            continue
+
+        if gar in cov_map:
+            item = cov_map[gar]
+            lmi = item.get("lmi", "R$ ")
+            pos = item.get("pos", "")
+
+            # escreve nas colunas 2 e 3
+            set_cell_text(r.cells[2], (lmi if (lmi and lmi.strip() != "R$") else ""), 0)
+            set_cell_text(r.cells[3], pos or "", 0)
+
+
+# =============================
+# GERAÇÃO DO WORD (mantém o que já funciona + adiciona VI)
+# =============================
 def build_docx_bytes():
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
@@ -382,7 +479,7 @@ def build_docx_bytes():
     if t_iii and len(t_iii.rows) >= 5:
         set_cell_text(t_iii.cell(4, 0), st.session_state.atividade_principal)
 
-    # Página 2 - IV Vigência
+    # Página 2 - IV Vigência (limpa + 2 parágrafos)
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
         cell = t_vig.cell(1, 1)
@@ -416,7 +513,7 @@ def build_docx_bytes():
 
         totals_idx = None
         for idx, row in enumerate(t_vr.rows):
-            if any("TOTAIS" in c.text.upper() for c in row.cells):
+            if any("TOTAIS" in (c.text or "").upper() for c in row.cells):
                 totals_idx = idx
                 break
 
@@ -463,6 +560,9 @@ def build_docx_bytes():
                 except Exception:
                     pass
 
+    # ✅ NOVO: VI Coberturas — preenche LMI e POS na tabela do Word
+    fill_vi_in_word(doc)
+
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
@@ -475,10 +575,11 @@ if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo '{TEMPLATE}' não encontrado no repositório.")
     st.stop()
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "Página 1 - Capa/Cotação",
     "Página 2 - Segurado/Vigência/Locais",
-    "Página 3 - Valor em Risco (R$)"
+    "Página 3 - Valor em Risco (R$)",
+    "Páginas 4–8 - Coberturas (VI)"
 ])
 
 _sync_lists()
@@ -501,7 +602,7 @@ with tab1:
 
 # -------- Página 2 --------
 with tab2:
-    st.subheader("I - Segurado / Cossegurados (voltou)")
+    st.subheader("I - Segurado / Cossegurados")
     c1, c2 = st.columns(2)
     with c1:
         st.text_input("Segurado", key="segurado_p2")
@@ -510,7 +611,7 @@ with tab2:
         st.text_input("CNPJ Segurado", key="cnpj_p2")
         st.text_input("CNPJ Cossegurados", key="cosseg_cnpj")
 
-    st.subheader("III - Atividade Principal (voltou)")
+    st.subheader("III - Atividade Principal")
     st.text_input("Atividade Principal", key="atividade_principal")
 
     st.subheader("IV - Vigência do seguro")
@@ -523,11 +624,11 @@ with tab2:
     st.subheader("V - Locais em Risco/VR")
     b1, b2, b3 = st.columns([1, 1, 2])
     with b1:
-        if st.button("➕ +10 locais"):
+        if st.button("➕ +10 locais", key="btn_locais_plus"):
             aumentar_locais(10)
             safe_rerun()
     with b2:
-        if st.button("➖ -10 locais"):
+        if st.button("➖ -10 locais", key="btn_locais_minus"):
             reduzir_locais(10)
             safe_rerun()
     with b3:
@@ -593,11 +694,11 @@ with tab3:
 
     b1, b2, b3 = st.columns([1, 1, 2])
     with b1:
-        if st.button("➕ +10 linhas VR"):
+        if st.button("➕ +10 linhas VR", key="btn_vr_plus"):
             aumentar_locais(10)
             safe_rerun()
     with b2:
-        if st.button("➖ -10 linhas VR"):
+        if st.button("➖ -10 linhas VR", key="btn_vr_minus"):
             reduzir_locais(10)
             safe_rerun()
     with b3:
@@ -670,9 +771,42 @@ with tab3:
     vr_total = total_dm + total_luc
     st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
 
+# -------- NOVO: Páginas 4–8 (VI) --------
+with tab4:
+    st.subheader("VI - Coberturas, Limites e Franquias por Evento e Local")
+    st.caption("Locais e Garantias foram transcritos automaticamente do modelo. Preencha LMI (R$) e POS/Franquia. [1](https://allianzms-my.sharepoint.com/personal/manuel_jobcenterext_allpronet_com_br/_layouts/15/Doc.aspx?sourcedoc=%7BECB0E7C2-B90E-4D7A-9EB9-DD473A22F216%7D&file=MODELO%20RN%20(1).docx&action=default&mobileredirect=true)")
+
+    if not st.session_state.coberturas_data:
+        st.error("Não consegui localizar a tabela VI no modelo. Verifique se a tabela contém as colunas Locais / Garantias / LMI / POS.")
+    else:
+        secao_atual = None
+        for i, item in enumerate(st.session_state.coberturas_data):
+            if item.get("secao") != secao_atual:
+                secao_atual = item.get("secao")
+                st.markdown(f"### {secao_atual}")
+
+            colL, colG, colLMI, colPOS = st.columns([0.8, 3.2, 1.2, 2.2])
+
+            colL.text_input("Locais", value=item.get("locais", ""), disabled=True, key=f"vi_loc_{i}")
+            colG.text_area("Garantias", value=item.get("garantia", ""), disabled=True, height=55, key=f"vi_gar_{i}")
+
+            lmi_key = f"vi_lmi_{i}"
+            if lmi_key not in st.session_state:
+                st.session_state[lmi_key] = item.get("lmi", "R$ ")
+            colLMI.text_input("LMI (R$)", key=lmi_key, on_change=format_money_field, args=(lmi_key,))
+
+            pos_key = f"vi_pos_{i}"
+            if pos_key not in st.session_state:
+                st.session_state[pos_key] = item.get("pos", "")
+            colPOS.text_area("POS/Franquia (R$ / Por Evento)", key=pos_key, height=55)
+
+            # persistir
+            item["lmi"] = st.session_state[lmi_key]
+            item["pos"] = st.session_state[pos_key]
+
 # -------- Gerar / Baixar --------
 st.markdown("---")
-if st.button("✅ Gerar Word"):
+if st.button("✅ Gerar Word", key="btn_gerar_word"):
     st.session_state.generated_docx_bytes = build_docx_bytes()
     st.toast("Word gerado com sucesso ✅", icon="✅")
 
