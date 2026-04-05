@@ -23,22 +23,26 @@ TEMPLATE = "MODELO RN (1).docx"
 # SESSION STATE (locais dinâmicos)
 # =============================
 if "n_locais" not in st.session_state:
-    st.session_state.n_locais = 10  # padrão inicial
+    st.session_state.n_locais = 10
 
 if "locais_data" not in st.session_state:
-    # cada item: cep, endereco_base, numero, complemento, atividade
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
-# versionador para permitir atualizar defaults sem mexer em session_state de widgets já montados
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
 
+def safe_rerun():
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+
 def _sync_locais_list():
-    """Garante que locais_data tenha tamanho = n_locais."""
     n = int(st.session_state.n_locais)
     cur = st.session_state.locais_data
     if len(cur) < n:
@@ -59,14 +63,6 @@ def reduzir_locais(menos=10):
     _sync_locais_list()
 
 
-def safe_rerun():
-    """Compatível com versões diferentes do Streamlit."""
-    try:
-        st.rerun()
-    except Exception:
-        st.experimental_rerun()
-
-
 # =============================
 # FUNÇÕES AUXILIARES
 # =============================
@@ -85,7 +81,6 @@ def format_cep(cep: str) -> str:
 
 
 def viacep_lookup(cep: str) -> str:
-    """Busca CEP no ViaCEP. Retorna string base do endereço ou '' se falhar."""
     nums = re.sub(r"\D", "", cep or "")
     if len(nums) != 8:
         return ""
@@ -108,7 +103,6 @@ def viacep_lookup(cep: str) -> str:
 
 
 def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> str:
-    """Monta no formato: base - Nº xx - complemento (tudo no mesmo campo de endereço)."""
     partes = []
     base = (endereco_base or "").strip()
     if base:
@@ -129,7 +123,6 @@ def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> 
 # FUNÇÕES WORD
 # =============================
 def set_cell_text(cell, text, paragraph_index=0):
-    """Escreve preservando estilo (não destrói a célula)."""
     while len(cell.paragraphs) <= paragraph_index:
         cell.add_paragraph("")
     p = cell.paragraphs[paragraph_index]
@@ -142,7 +135,6 @@ def set_cell_text(cell, text, paragraph_index=0):
 
 
 def replace_in_cell_all(cell, old, new, max_replacements=None):
-    """Substitui texto dentro dos runs da célula."""
     count = 0
     for p in cell.paragraphs:
         for r in p.runs:
@@ -159,10 +151,6 @@ def replace_in_cell_all(cell, old, new, max_replacements=None):
 
 
 def clear_cell_keep_format(cell):
-    """
-    Remove TODOS os parágrafos do conteúdo da célula (mata sobra de xx/xx/xxxx e espaçamento estranho),
-    mantendo a estrutura da célula (bordas/sombreamento).
-    """
     tc = cell._tc
     for p in list(tc.p_lst):
         tc.remove(p)
@@ -187,7 +175,6 @@ def find_row(table, left_label_contains):
 
 
 def find_locais_table(doc):
-    """Acha a tabela com cabeçalho Local/Endereço/Atividade."""
     for t in doc.tables:
         if len(t.rows) == 0:
             continue
@@ -198,10 +185,6 @@ def find_locais_table(doc):
 
 
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
-    """
-    Garante header_rows + desired_data_rows linhas.
-    Clona o XML da última linha para preservar estilo quando passar de 10 locais.
-    """
     current_rows = len(table.rows)
     target_rows = header_rows + desired_data_rows
     if current_rows >= target_rows:
@@ -218,14 +201,14 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
 # UI
 # =============================
 if not os.path.exists(TEMPLATE):
-    st.error(f"Arquivo {TEMPLATE} não encontrado no repositório")
+    st.error(f"Arquivo {TEMPLATE} não encontrado no repositório.")
     st.stop()
 
 tabs = st.tabs(["Página 1 - Capa/Cotação", "Página 2 - Segurado/Vigência/Locais"])
 
 with st.form("rn_form"):
 
-    # ---------- Página 1 ----------
+    # Página 1
     with tabs[0]:
         col1, col2 = st.columns(2)
         with col1:
@@ -235,14 +218,13 @@ with st.form("rn_form"):
             filial = st.text_input("REMETENTE - Comercial / Filial")
             segurado_p1 = st.text_input("SEGURADO (Página 1)")
             cnpj_raw_p1 = st.text_input("CNPJ (Página 1)")
-
         with col2:
             email_user = st.text_input("E-mail (antes do @allianz.com.br)")
             data_doc = st.date_input("DATA / DATE", value=date.today())
             paginas = st.number_input("PÁGINAS / PAGES", value=13, min_value=1)
             cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
-    # ---------- Página 2 ----------
+    # Página 2
     with tabs[1]:
         st.subheader("I - Segurado / Cossegurados")
         c1, c2 = st.columns(2)
@@ -302,7 +284,6 @@ with st.form("rn_form"):
             comp_val = c_comp.text_input("", value=row.get("complemento", ""), key=comp_key, placeholder="Complemento")
             atv_val = c_atv.text_input("", value=row.get("atividade", ""), key=atv_key, placeholder="Atividade")
 
-            # Persistir digitado
             st.session_state.locais_data[i]["cep"] = cep_val
             st.session_state.locais_data[i]["endereco_base"] = end_val
             st.session_state.locais_data[i]["numero"] = num_val
@@ -320,7 +301,6 @@ with st.form("rn_form"):
                 else:
                     st.toast("CEP não encontrado ou sem acesso. Preencha manualmente.", icon="⚠️")
 
-            # Preview do endereço final no padrão pedido
             endereco_final_preview = montar_endereco_final(
                 st.session_state.locais_data[i]["endereco_base"],
                 st.session_state.locais_data[i]["numero"],
@@ -338,7 +318,6 @@ if submit:
     doc = Document(TEMPLATE)
 
     data = {
-        # pág 1
         "rn": rn,
         "destinatario": destinatario,
         "subscritor": subscritor,
@@ -350,7 +329,6 @@ if submit:
         "segurado_p1": segurado_p1,
         "cnpj_p1": format_cnpj(cnpj_raw_p1),
 
-        # pág 2
         "segurado_p2": segurado_p2,
         "cnpj_p2": format_cnpj(cnpj_raw_p2),
         "cossegurados": cossegurados,
@@ -361,7 +339,7 @@ if submit:
         "locais": st.session_state.locais_data,
     }
 
-    # ========= PÁGINA 1 =========
+    # Página 1 - capa
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -394,6 +372,7 @@ if submit:
                 f"{data['paginas']} (incluindo esta capa/including the cover page)"
             )
 
+    # Página 1 - cotação
     quote = find_table(doc, "COTAÇÃO:")
     if quote:
         i = find_row(quote, "COTAÇÃO")
@@ -408,7 +387,7 @@ if submit:
         if i is not None and data["cnpj_p1"]:
             set_cell_text(quote.cell(i, 1), data["cnpj_p1"])
 
-    # ========= PÁGINA 2 - I =========
+    # Página 2 - I
     t_seg = find_table(doc, "I – Segurado")
     if t_seg:
         if len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
@@ -417,19 +396,17 @@ if submit:
             set_cell_text(t_seg.cell(3, 0), data["cossegurados"])
             set_cell_text(t_seg.cell(3, 1), data["cosseg_cnpj"])
 
-    # ========= PÁGINA 2 - III =========
+    # Página 2 - III
     t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
     if t_iii:
         if len(t_iii.rows) >= 5:
             set_cell_text(t_iii.cell(4, 0), data["atividade_principal"])
 
-    # ========= PÁGINA 2 - IV (VIGÊNCIA) =========
-    # Correção definitiva: limpa conteúdo e recria 2 parágrafos alinhados à esquerda
+    # Página 2 - IV (Vigência) CORRIGIDA
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig:
         if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
             cell = t_vig.cell(1, 1)
-
             clear_cell_keep_format(cell)
 
             p1 = cell.add_paragraph(f"Das 24 horas do dia {data['vig_inicio']}")
@@ -438,7 +415,7 @@ if submit:
             p2 = cell.add_paragraph(f"Às 24 horas do dia {data['vig_fim']}")
             p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # ========= PÁGINA 2 - V (LOCAIS) =========
+    # Página 2 - V (Locais)
     t_locais = find_locais_table(doc)
     if t_locais:
         desired = len(data["locais"])
@@ -459,7 +436,7 @@ if submit:
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # ========= SALVAR =========
+    # Salvar e baixar
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "RN_preenchido.docx")
         doc.save(output_path)
@@ -471,4 +448,3 @@ if submit:
                 file_name="RN_preenchido.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
-``
