@@ -20,17 +20,26 @@ st.success("✅ App carregado com sucesso")
 TEMPLATE = "MODELO RN (1).docx"
 
 # =============================
-# SESSION STATE (locais dinâmicos)
+# SESSION STATE (tamanho mestre)
 # =============================
 if "n_locais" not in st.session_state:
     st.session_state.n_locais = 10
 
+# Locais (Página 2)
 if "locais_data" not in st.session_state:
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
+# VR (Página 3)
+if "vr_data" not in st.session_state:
+    st.session_state.vr_data = [
+        {"predio": "", "mmu": "", "mmp": "", "lucros": ""}
+        for _ in range(st.session_state.n_locais)
+    ]
+
+# Versionador para CEP (evitar erro de session_state em widgets)
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
 
@@ -42,29 +51,39 @@ def safe_rerun():
         st.experimental_rerun()
 
 
-def _sync_locais_list():
+def _sync_lists():
+    """Garante que locais_data e vr_data tenham tamanho = n_locais."""
     n = int(st.session_state.n_locais)
-    cur = st.session_state.locais_data
-    if len(cur) < n:
-        cur.extend(
-            [{"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""} for _ in range(n - len(cur))]
+
+    # locais_data
+    curL = st.session_state.locais_data
+    if len(curL) < n:
+        curL.extend(
+            [{"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""} for _ in range(n - len(curL))]
         )
-    elif len(cur) > n:
-        st.session_state.locais_data = cur[:n]
+    elif len(curL) > n:
+        st.session_state.locais_data = curL[:n]
+
+    # vr_data
+    curV = st.session_state.vr_data
+    if len(curV) < n:
+        curV.extend([{"predio": "", "mmu": "", "mmp": "", "lucros": ""} for _ in range(n - len(curV))])
+    elif len(curV) > n:
+        st.session_state.vr_data = curV[:n]
 
 
 def aumentar_locais(mais=10):
     st.session_state.n_locais = int(st.session_state.n_locais) + int(mais)
-    _sync_locais_list()
+    _sync_lists()
 
 
 def reduzir_locais(menos=10):
     st.session_state.n_locais = max(10, int(st.session_state.n_locais) - int(menos))
-    _sync_locais_list()
+    _sync_lists()
 
 
 # =============================
-# FUNÇÕES AUXILIARES
+# FUNÇÕES AUXILIARES (formatos)
 # =============================
 def format_cnpj(cnpj: str) -> str:
     nums = re.sub(r"\D", "", cnpj or "")
@@ -84,7 +103,6 @@ def viacep_lookup(cep: str) -> str:
     nums = re.sub(r"\D", "", cep or "")
     if len(nums) != 8:
         return ""
-
     url = f"https://viacep.com.br/ws/{nums}/json/"
     try:
         with urllib.request.urlopen(url, timeout=6) as resp:
@@ -107,16 +125,56 @@ def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> 
     base = (endereco_base or "").strip()
     if base:
         partes.append(base)
-
     num = (numero or "").strip()
     if num:
         partes.append(f"Nº {num}")
-
     comp = (complemento or "").strip()
     if comp:
         partes.append(comp)
-
     return " - ".join(partes)
+
+
+def parse_brl_number(val: str) -> float:
+    """
+    Aceita:
+      1234
+      1.234,56
+      1234,56
+      1,234.56 (converte também)
+    Retorna float.
+    """
+    if val is None:
+        return 0.0
+    s = str(val).strip()
+    if not s:
+        return 0.0
+    # remove R$ e espaços
+    s = s.replace("R$", "").replace(" ", "")
+    # se tem vírgula e ponto, assume BR (ponto milhar, vírgula decimal) se a última vírgula vier depois do último ponto
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    else:
+        # só vírgula -> decimal BR
+        if "," in s:
+            s = s.replace(".", "").replace(",", ".")
+        # só ponto -> decimal EN
+        else:
+            # deixa ponto como decimal
+            pass
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def fmt_brl_money(x: float) -> str:
+    """R$ 1.234.567,89"""
+    s = f"{x:,.2f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
 
 
 # =============================
@@ -132,22 +190,6 @@ def set_cell_text(cell, text, paragraph_index=0):
             r.text = ""
     else:
         p.add_run(text)
-
-
-def replace_in_cell_all(cell, old, new, max_replacements=None):
-    count = 0
-    for p in cell.paragraphs:
-        for r in p.runs:
-            if old in r.text:
-                if max_replacements is None:
-                    r.text = r.text.replace(old, new)
-                else:
-                    while old in r.text and count < max_replacements:
-                        r.text = r.text.replace(old, new, 1)
-                        count += 1
-                        if count >= max_replacements:
-                            break
-    return count
 
 
 def clear_cell_keep_format(cell):
@@ -184,6 +226,20 @@ def find_locais_table(doc):
     return None
 
 
+def find_vr_table(doc):
+    """
+    Acha a tabela VR pela linha de cabeçalho que contém:
+    Local, Prédio, MMU, MMP e Lucros Cessantes
+    """
+    for t in doc.tables:
+        if len(t.rows) < 2:
+            continue
+        header = " ".join(c.text.strip().upper() for c in t.rows[1].cells)
+        if ("PRÉDIO" in header) and ("MMU" in header) and ("MMP" in header) and ("LUCROS" in header) and ("LOCAL" in header):
+            return t
+    return None
+
+
 def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, template_row_index=None):
     current_rows = len(table.rows)
     target_rows = header_rows + desired_data_rows
@@ -197,6 +253,39 @@ def ensure_table_rows_with_style(table, desired_data_rows, header_rows=1, templa
         table._tbl.append(new_tr)
 
 
+def vr_adjust_rows(table, desired_rows):
+    """
+    Garante que a tabela VR tenha exatamente desired_rows linhas de dados (01..N),
+    inserindo ou removendo linhas ANTES da linha 'Totais'.
+    """
+    # acha linha "Totais"
+    totals_idx = None
+    for i, row in enumerate(table.rows):
+        if any("TOTAIS" in c.text.upper() for c in row.cells):
+            totals_idx = i
+            break
+    if totals_idx is None:
+        return  # não achou, não mexe
+
+    data_start = 2  # row0: título (mesclado), row1: cabeçalho
+    current_data = totals_idx - data_start
+
+    # adicionar
+    if desired_rows > current_data:
+        template_tr = table.rows[totals_idx - 1]._tr  # última linha de dados atual
+        for _ in range(desired_rows - current_data):
+            new_tr = copy.deepcopy(template_tr)
+            table._tbl.insert(totals_idx, new_tr)
+            totals_idx += 1
+
+    # remover
+    elif desired_rows < current_data:
+        for _ in range(current_data - desired_rows):
+            remove_idx = totals_idx - 1
+            table._tbl.remove(table.rows[remove_idx]._tr)
+            totals_idx -= 1
+
+
 # =============================
 # UI
 # =============================
@@ -204,11 +293,19 @@ if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo {TEMPLATE} não encontrado no repositório.")
     st.stop()
 
-tabs = st.tabs(["Página 1 - Capa/Cotação", "Página 2 - Segurado/Vigência/Locais"])
+tabs = st.tabs([
+    "Página 1 - Capa/Cotação",
+    "Página 2 - Segurado/Vigência/Locais",
+    "Página 3 - Valor em Risco (R$)"
+])
+
+_sync_lists()
 
 with st.form("rn_form"):
 
+    # =======================
     # Página 1
+    # =======================
     with tabs[0]:
         col1, col2 = st.columns(2)
         with col1:
@@ -224,7 +321,9 @@ with st.form("rn_form"):
             paginas = st.number_input("PÁGINAS / PAGES", value=13, min_value=1)
             cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
+    # =======================
     # Página 2
+    # =======================
     with tabs[1]:
         st.subheader("I - Segurado / Cossegurados")
         c1, c2 = st.columns(2)
@@ -252,9 +351,9 @@ with st.form("rn_form"):
         with b2:
             st.button("➖ -10 locais", on_click=reduzir_locais, kwargs={"menos": 10})
         with b3:
-            st.caption(f"Total de locais na interface: {st.session_state.n_locais}")
+            st.caption(f"Total de locais no app: {st.session_state.n_locais}")
 
-        _sync_locais_list()
+        _sync_lists()
         ver = int(st.session_state.locais_version)
 
         h1, h2, h3, h4, h5, h6, h7 = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
@@ -308,6 +407,71 @@ with st.form("rn_form"):
             )
             c_end.caption(endereco_final_preview if endereco_final_preview else "")
 
+    # =======================
+    # Página 3 - VR
+    # =======================
+    with tabs[2]:
+        st.subheader("Valor em Risco (R$)")
+        st.caption("Total Danos Materiais = Prédio + MMU + MMP. Valor em Risco Total = DM + Lucros.")
+
+        _sync_lists()
+        n = int(st.session_state.n_locais)
+
+        # Cabeçalho
+        c0, c1, c2, c3, c4, c5 = st.columns([0.6, 1.2, 1.2, 1.2, 1.3, 1.4])
+        c0.markdown("**Local**")
+        c1.markdown("**Prédio (R$)**")
+        c2.markdown("**MMU (R$)**")
+        c3.markdown("**MMP (R$)**")
+        c4.markdown("**Total DM (R$)**")
+        c5.markdown("**Lucros Cessantes (R$)**")
+
+        total_pred = total_mmu = total_mmp = total_dm = total_luc = 0.0
+
+        for i in range(n):
+            row = st.session_state.vr_data[i]
+
+            r0, r1, r2, r3, r4, r5 = st.columns([0.6, 1.2, 1.2, 1.2, 1.3, 1.4])
+            r0.write(f"{i+1:02d}")
+
+            pred_s = r1.text_input("", value=row.get("predio", ""), key=f"vr_pred_{i}")
+            mmu_s  = r2.text_input("", value=row.get("mmu", ""), key=f"vr_mmu_{i}")
+            mmp_s  = r3.text_input("", value=row.get("mmp", ""), key=f"vr_mmp_{i}")
+            luc_s  = r5.text_input("", value=row.get("lucros", ""), key=f"vr_luc_{i}")
+
+            pred = parse_brl_number(pred_s)
+            mmu  = parse_brl_number(mmu_s)
+            mmp  = parse_brl_number(mmp_s)
+            luc  = parse_brl_number(luc_s)
+
+            dm = pred + mmu + mmp
+
+            # persistir digitado (texto)
+            st.session_state.vr_data[i]["predio"] = pred_s
+            st.session_state.vr_data[i]["mmu"] = mmu_s
+            st.session_state.vr_data[i]["mmp"] = mmp_s
+            st.session_state.vr_data[i]["lucros"] = luc_s
+
+            r4.write(fmt_brl_money(dm))
+
+            total_pred += pred
+            total_mmu += mmu
+            total_mmp += mmp
+            total_dm += dm
+            total_luc += luc
+
+        st.markdown("---")
+        tcol0, tcol1, tcol2, tcol3, tcol4, tcol5 = st.columns([0.6, 1.2, 1.2, 1.2, 1.3, 1.4])
+        tcol0.markdown("**Totais**")
+        tcol1.markdown(f"**{fmt_brl_money(total_pred)}**")
+        tcol2.markdown(f"**{fmt_brl_money(total_mmu)}**")
+        tcol3.markdown(f"**{fmt_brl_money(total_mmp)}**")
+        tcol4.markdown(f"**{fmt_brl_money(total_dm)}**")
+        tcol5.markdown(f"**{fmt_brl_money(total_luc)}**")
+
+        vr_total = total_dm + total_luc
+        st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
+
     submit = st.form_submit_button("Gerar Word")
 
 
@@ -336,73 +500,13 @@ if submit:
         "atividade_principal": atividade_principal,
         "vig_inicio": vig_inicio.strftime("%d/%m/%Y"),
         "vig_fim": vig_fim.strftime("%d/%m/%Y"),
+
         "locais": st.session_state.locais_data,
+        "vr": st.session_state.vr_data,
+        "n_locais": int(st.session_state.n_locais),
     }
 
-    # Página 1 - capa
-    cover = find_table(doc, "PROC. Nº")
-    if cover:
-        i = find_row(cover, "PROC. Nº")
-        if i is not None and data["rn"]:
-            set_cell_text(cover.cell(i, 1), f"RN - {data['rn']}")
-
-        i = find_row(cover, "DESTINATÁRIO")
-        if i is not None and data["destinatario"]:
-            set_cell_text(cover.cell(i, 1), data["destinatario"])
-
-        i = find_row(cover, "REMETENTE/FROM")
-        if i is not None:
-            if data["subscritor"]:
-                set_cell_text(cover.cell(i, 1), data["subscritor"], 0)
-            if data["filial"]:
-                set_cell_text(cover.cell(i, 1), data["filial"], 1)
-
-        i = find_row(cover, "DEPTO/DIVISION")
-        if i is not None and data["email_user"]:
-            replace_in_cell_all(cover.cell(i, 1), "xxxx.xxxx", data["email_user"])
-
-        i = find_row(cover, "DATA/DATE")
-        if i is not None:
-            set_cell_text(cover.cell(i, 1), data["data"])
-
-        i = find_row(cover, "PÁGINAS/PAGES")
-        if i is not None:
-            set_cell_text(
-                cover.cell(i, 1),
-                f"{data['paginas']} (incluindo esta capa/including the cover page)"
-            )
-
-    # Página 1 - cotação
-    quote = find_table(doc, "COTAÇÃO:")
-    if quote:
-        i = find_row(quote, "COTAÇÃO")
-        if i is not None:
-            set_cell_text(quote.cell(i, 1), data["cotacao"])
-
-        i = find_row(quote, "SEGURADO")
-        if i is not None and data["segurado_p1"]:
-            set_cell_text(quote.cell(i, 1), data["segurado_p1"])
-
-        i = find_row(quote, "CNPJ")
-        if i is not None and data["cnpj_p1"]:
-            set_cell_text(quote.cell(i, 1), data["cnpj_p1"])
-
-    # Página 2 - I
-    t_seg = find_table(doc, "I – Segurado")
-    if t_seg:
-        if len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
-            set_cell_text(t_seg.cell(1, 0), data["segurado_p2"])
-            set_cell_text(t_seg.cell(1, 1), data["cnpj_p2"])
-            set_cell_text(t_seg.cell(3, 0), data["cossegurados"])
-            set_cell_text(t_seg.cell(3, 1), data["cosseg_cnpj"])
-
-    # Página 2 - III
-    t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
-    if t_iii:
-        if len(t_iii.rows) >= 5:
-            set_cell_text(t_iii.cell(4, 0), data["atividade_principal"])
-
-    # Página 2 - IV (Vigência) CORRIGIDA
+    # -------- Página 2 - Vigência (corrigida) --------
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig:
         if len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
@@ -411,14 +515,13 @@ if submit:
 
             p1 = cell.add_paragraph(f"Das 24 horas do dia {data['vig_inicio']}")
             p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
             p2 = cell.add_paragraph(f"Às 24 horas do dia {data['vig_fim']}")
             p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # Página 2 - V (Locais)
+    # -------- Página 2 - Locais --------
     t_locais = find_locais_table(doc)
     if t_locais:
-        desired = len(data["locais"])
+        desired = data["n_locais"]
         ensure_table_rows_with_style(t_locais, desired_data_rows=desired, header_rows=1)
 
         for i in range(desired):
@@ -436,7 +539,68 @@ if submit:
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # Salvar e baixar
+    # -------- Página 3 - VR --------
+    t_vr = find_vr_table(doc)
+    if t_vr:
+        desired = data["n_locais"]
+        vr_adjust_rows(t_vr, desired)
+
+        # localizar novamente Totais
+        totals_idx = None
+        for i, row in enumerate(t_vr.rows):
+            if any("TOTAIS" in c.text.upper() for c in row.cells):
+                totals_idx = i
+                break
+
+        data_start = 2  # row0: título mesclado, row1: cabeçalho
+        total_pred = total_mmu = total_mmp = total_dm = total_luc = 0.0
+
+        # preencher linhas de dados
+        for i in range(desired):
+            row_idx = data_start + i
+            local_num = f"{i+1:02d}"
+
+            pred = parse_brl_number(data["vr"][i].get("predio", ""))
+            mmu  = parse_brl_number(data["vr"][i].get("mmu", ""))
+            mmp  = parse_brl_number(data["vr"][i].get("mmp", ""))
+            luc  = parse_brl_number(data["vr"][i].get("lucros", ""))
+            dm = pred + mmu + mmp
+
+            total_pred += pred
+            total_mmu += mmu
+            total_mmp += mmp
+            total_dm += dm
+            total_luc += luc
+
+            # colunas: 0 Local, 1 Prédio, 2 MMU, 3 MMP, 4 Total DM, 5 Lucros
+            set_cell_text(t_vr.cell(row_idx, 0), local_num)
+            set_cell_text(t_vr.cell(row_idx, 1), fmt_brl_money(pred))
+            set_cell_text(t_vr.cell(row_idx, 2), fmt_brl_money(mmu))
+            set_cell_text(t_vr.cell(row_idx, 3), fmt_brl_money(mmp))
+            set_cell_text(t_vr.cell(row_idx, 4), fmt_brl_money(dm))
+            set_cell_text(t_vr.cell(row_idx, 5), fmt_brl_money(luc))
+
+        # preencher Totais
+        if totals_idx is not None:
+            set_cell_text(t_vr.cell(totals_idx, 1), fmt_brl_money(total_pred))
+            set_cell_text(t_vr.cell(totals_idx, 2), fmt_brl_money(total_mmu))
+            set_cell_text(t_vr.cell(totals_idx, 3), fmt_brl_money(total_mmp))
+            set_cell_text(t_vr.cell(totals_idx, 4), fmt_brl_money(total_dm))
+            set_cell_text(t_vr.cell(totals_idx, 5), fmt_brl_money(total_luc))
+
+            # VR total (linha seguinte)
+            vr_total = total_dm + total_luc
+            vr_total_row = totals_idx + 1
+            # tenta escrever na última célula (mesclada pode variar)
+            try:
+                set_cell_text(t_vr.cell(vr_total_row, 5), fmt_brl_money(vr_total))
+            except Exception:
+                try:
+                    set_cell_text(t_vr.cell(vr_total_row, 4), fmt_brl_money(vr_total))
+                except Exception:
+                    pass
+
+    # -------- SALVAR --------
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "RN_preenchido.docx")
         doc.save(output_path)
