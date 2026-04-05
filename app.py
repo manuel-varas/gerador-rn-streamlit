@@ -11,7 +11,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # =============================
-# CONFIG STREAMLIT
+# CONFIG
 # =============================
 st.set_page_config(page_title="Gerador RN - Allianz", layout="wide")
 st.title("Gerador de RN - Modelo Word")
@@ -20,28 +20,25 @@ st.success("✅ App carregado com sucesso")
 TEMPLATE = "MODELO RN (1).docx"
 
 # =============================
-# SESSION STATE (tamanho mestre)
+# STATE (sempre incremental, nunca remove)
 # =============================
 if "n_locais" not in st.session_state:
-    st.session_state.n_locais = 10  # padrão inicial
+    st.session_state.n_locais = 10
 
-# Página 2 (Locais)
+if "locais_version" not in st.session_state:
+    st.session_state.locais_version = 0
+
 if "locais_data" not in st.session_state:
     st.session_state.locais_data = [
         {"cep": "", "endereco_base": "", "numero": "", "complemento": "", "atividade": ""}
         for _ in range(st.session_state.n_locais)
     ]
 
-# Página 3 (VR)
 if "vr_data" not in st.session_state:
     st.session_state.vr_data = [
-        {"predio": "", "mmu": "", "mmp": "", "lucros": ""}
+        {"predio": "R$ ", "mmu": "R$ ", "mmp": "R$ ", "lucros": "R$ "}
         for _ in range(st.session_state.n_locais)
     ]
-
-# Versionador para CEP (evitar erro de session_state ao atualizar campo)
-if "locais_version" not in st.session_state:
-    st.session_state.locais_version = 0
 
 
 def safe_rerun():
@@ -52,7 +49,7 @@ def safe_rerun():
 
 
 def _sync_lists():
-    """Garante que locais_data e vr_data tenham tamanho = n_locais."""
+    """Garante que Locais e VR cresçam juntos (robusto)."""
     n = int(st.session_state.n_locais)
 
     L = st.session_state.locais_data
@@ -63,7 +60,7 @@ def _sync_lists():
 
     V = st.session_state.vr_data
     if len(V) < n:
-        V.extend([{"predio": "", "mmu": "", "mmp": "", "lucros": ""} for _ in range(n - len(V))])
+        V.extend([{"predio": "R$ ", "mmu": "R$ ", "mmp": "R$ ", "lucros": "R$ "} for _ in range(n - len(V))])
     elif len(V) > n:
         st.session_state.vr_data = V[:n]
 
@@ -79,7 +76,7 @@ def reduzir_locais(menos=10):
 
 
 # =============================
-# FORMATAÇÃO / PARSE
+# FORMAT HELPERS
 # =============================
 def format_cnpj(cnpj: str) -> str:
     nums = re.sub(r"\D", "", cnpj or "")
@@ -131,14 +128,6 @@ def montar_endereco_final(endereco_base: str, numero: str, complemento: str) -> 
 
 
 def parse_brl_number(val: str) -> float:
-    """
-    Aceita:
-      2000000
-      R$ 2.000.000,00
-      2.000.000,00
-      2000000,50
-      1,234.56
-    """
     if val is None:
         return 0.0
     s = str(val).strip()
@@ -151,12 +140,12 @@ def parse_brl_number(val: str) -> float:
 
     if "," in s and "." in s:
         if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")   # BR
+            s = s.replace(".", "").replace(",", ".")
         else:
-            s = s.replace(",", "")                      # EN
+            s = s.replace(",", "")
     else:
         if "," in s:
-            s = s.replace(".", "").replace(",", ".")    # BR
+            s = s.replace(".", "").replace(",", ".")
 
     try:
         return float(s)
@@ -165,29 +154,33 @@ def parse_brl_number(val: str) -> float:
 
 
 def fmt_brl_number(x: float) -> str:
-    """1.234.567,89 (sem prefixo)"""
     s = f"{x:,.2f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return s
+    return s.replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def fmt_brl_money(x: float) -> str:
-    """R$ 1.234.567,89"""
     return f"R$ {fmt_brl_number(x)}"
 
 
-def format_vr_input_keep_prefix(key: str):
-    """
-    Mantém o prefixo 'R$' automaticamente no campo.
-    Ao sair do input:
-      2000000 -> R$ 2.000.000,00
-    """
-    raw = st.session_state.get(key, "")
+def ensure_prefix(v: str) -> str:
+    txt = (v or "").strip()
+    if txt.startswith("R$"):
+        return "R$ " if txt == "R$" else txt
+    if txt == "":
+        return "R$ "
+    return "R$ " + txt
+
+
+def format_money_field(key: str):
+    raw = ensure_prefix(st.session_state.get(key, ""))
     value = parse_brl_number(raw)
-    if value > 0:
-        st.session_state[key] = fmt_brl_money(value)
-    else:
-        st.session_state[key] = ""
+
+    # mantém prefixo fixo mesmo vazio
+    if raw.strip() == "R$" or raw.strip() == "":
+        st.session_state[key] = "R$ "
+        return
+
+    st.session_state[key] = fmt_brl_money(value)
 
 
 # =============================
@@ -247,7 +240,6 @@ def find_locais_table(doc):
 
 
 def find_vr_table(doc):
-    # header row 1 contém PRÉDIO/MMU/MMP/LUCROS/LOCAL no modelo
     for t in doc.tables:
         if len(t.rows) < 2:
             continue
@@ -288,7 +280,6 @@ def vr_adjust_rows(table, desired_rows):
             new_tr = copy.deepcopy(template_tr)
             table._tbl.insert(totals_idx, new_tr)
             totals_idx += 1
-
     elif desired_rows < current_data:
         for _ in range(current_data - desired_rows):
             remove_idx = totals_idx - 1
@@ -300,200 +291,179 @@ def vr_adjust_rows(table, desired_rows):
 # UI
 # =============================
 if not os.path.exists(TEMPLATE):
-    st.error(f"Arquivo {TEMPLATE} não encontrado no repositório.")
+    st.error(f"Arquivo '{TEMPLATE}' não encontrado no repositório.")
     st.stop()
 
 tabs = st.tabs([
     "Página 1 - Capa/Cotação",
-    "Página 2 - Segurado/Vigência/Locais",
+    "Página 2 - Locais",
     "Página 3 - Valor em Risco (R$)"
 ])
 
 _sync_lists()
 
-with st.form("rn_form"):
+# -------- Página 1 --------
+with tabs[0]:
+    col1, col2 = st.columns(2)
+    with col1:
+        rn = st.text_input("PROC. Nº (RN)")
+        destinatario = st.text_input("DESTINATÁRIO / To")
+        subscritor = st.text_input("REMETENTE - Subscritor")
+        filial = st.text_input("REMETENTE - Comercial / Filial")
+        segurado_p1 = st.text_input("SEGURADO")
+        cnpj_raw_p1 = st.text_input("CNPJ")
+    with col2:
+        email_user = st.text_input("E-mail (antes do @allianz.com.br)")
+        data_doc = st.date_input("DATA / DATE", value=date.today())
+        paginas = st.number_input("PÁGINAS / PAGES", value=13, min_value=1)
+        cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
 
-    # -----------------------------
-    # Página 1
-    # -----------------------------
-    with tabs[0]:
-        col1, col2 = st.columns(2)
-        with col1:
-            rn = st.text_input("PROC. Nº (RN)")
-            destinatario = st.text_input("DESTINATÁRIO/To")
-            subscritor = st.text_input("REMETENTE - Subscritor")
-            filial = st.text_input("REMETENTE - Comercial / Filial")
-            segurado_p1 = st.text_input("SEGURADO (Página 1)")
-            cnpj_raw_p1 = st.text_input("CNPJ (Página 1)")
-        with col2:
-            email_user = st.text_input("E-mail (antes do @allianz.com.br)")
-            data_doc = st.date_input("DATA/DATE", value=date.today())
-            paginas = st.number_input("PÁGINAS/PAGES", value=13, min_value=1)
-            cotacao = st.text_input("COTAÇÃO", value="Riscos Nomeados")
+# -------- Página 2 --------
+with tabs[1]:
+    st.subheader("Locais em Risco/VR")
 
-    # -----------------------------
-    # Página 2
-    # -----------------------------
-    with tabs[1]:
-        st.subheader("IV - Vigência do seguro")
-        v1, v2 = st.columns(2)
-        with v1:
-            vig_inicio = st.date_input("Início de vigência", value=date.today(), key="vig_inicio_p2")
-        with v2:
-            vig_fim = st.date_input("Término de vigência", value=date.today(), key="vig_fim_p2")
+    b1, b2, b3 = st.columns([1, 1, 2])
+    with b1:
+        st.button("➕ +10 locais", on_click=aumentar_locais, kwargs={"mais": 10})
+    with b2:
+        st.button("➖ -10 locais", on_click=reduzir_locais, kwargs={"menos": 10})
+    with b3:
+        st.caption(f"Total de locais (Locais/VR): {st.session_state.n_locais}")
 
-        st.subheader("V - Locais em Risco/VR")
-        b1, b2, b3 = st.columns([1, 1, 2])
-        with b1:
-            st.button("➕ +10 locais", on_click=aumentar_locais, kwargs={"mais": 10})
-        with b2:
-            st.button("➖ -10 locais", on_click=reduzir_locais, kwargs={"menos": 10})
-        with b3:
-            st.caption(f"Total de locais (Locais/VR): {st.session_state.n_locais}")
+    _sync_lists()
+    ver = int(st.session_state.locais_version)
 
-        _sync_lists()
-        ver = int(st.session_state.locais_version)
+    h1, h2, h3, h4, h5, h6, h7 = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
+    h1.markdown("**Local**")
+    h2.markdown("**CEP**")
+    h3.markdown("**Buscar**")
+    h4.markdown("**Endereço**")
+    h5.markdown("**Nº**")
+    h6.markdown("**Complemento**")
+    h7.markdown("**Atividade**")
 
-        h1, h2, h3, h4, h5, h6, h7 = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
-        h1.markdown("**Local**")
-        h2.markdown("**CEP**")
-        h3.markdown("**Buscar**")
-        h4.markdown("**Endereço**")
-        h5.markdown("**Nº**")
-        h6.markdown("**Complemento**")
-        h7.markdown("**Atividade**")
+    for i in range(int(st.session_state.n_locais)):
+        row = st.session_state.locais_data[i]
 
-        for i in range(int(st.session_state.n_locais)):
-            row = st.session_state.locais_data[i]
+        c_local, c_cep, c_btn, c_end, c_num, c_comp, c_atv = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
+        c_local.write(f"{i+1:02d}")
 
-            c_local, c_cep, c_btn, c_end, c_num, c_comp, c_atv = st.columns([0.6, 1.0, 0.9, 2.3, 0.8, 1.2, 2.0])
-            c_local.write(f"{i+1:02d}")
+        cep_key = f"cep_{i}_{ver}"
+        end_key = f"end_{i}_{ver}"
+        num_key = f"num_{i}_{ver}"
+        comp_key = f"comp_{i}_{ver}"
+        atv_key = f"atv_{i}_{ver}"
 
-            cep_key = f"cep_{i}_{ver}"
-            end_key = f"end_{i}_{ver}"
-            num_key = f"num_{i}_{ver}"
-            comp_key = f"comp_{i}_{ver}"
-            atv_key = f"atv_{i}_{ver}"
+        cep_val = c_cep.text_input("", value=row.get("cep", ""), key=cep_key, placeholder="00000-000")
+        end_val = c_end.text_input("", value=row.get("endereco_base", ""), key=end_key, placeholder="Rua..., Bairro..., Cidade-UF")
+        num_val = c_num.text_input("", value=row.get("numero", ""), key=num_key, placeholder="XX")
+        comp_val = c_comp.text_input("", value=row.get("complemento", ""), key=comp_key, placeholder="Complemento")
+        atv_val = c_atv.text_input("", value=row.get("atividade", ""), key=atv_key, placeholder="Atividade")
 
-            cep_val = c_cep.text_input("", value=row.get("cep", ""), key=cep_key, placeholder="00000-000")
-            end_val = c_end.text_input("", value=row.get("endereco_base", ""), key=end_key, placeholder="Rua..., Bairro..., Cidade-UF")
-            num_val = c_num.text_input("", value=row.get("numero", ""), key=num_key, placeholder="XX")
-            comp_val = c_comp.text_input("", value=row.get("complemento", ""), key=comp_key, placeholder="Complemento")
-            atv_val = c_atv.text_input("", value=row.get("atividade", ""), key=atv_key, placeholder="Atividade")
+        st.session_state.locais_data[i]["cep"] = cep_val
+        st.session_state.locais_data[i]["endereco_base"] = end_val
+        st.session_state.locais_data[i]["numero"] = num_val
+        st.session_state.locais_data[i]["complemento"] = comp_val
+        st.session_state.locais_data[i]["atividade"] = atv_val
 
-            st.session_state.locais_data[i]["cep"] = cep_val
-            st.session_state.locais_data[i]["endereco_base"] = end_val
-            st.session_state.locais_data[i]["numero"] = num_val
-            st.session_state.locais_data[i]["complemento"] = comp_val
-            st.session_state.locais_data[i]["atividade"] = atv_val
+        if c_btn.button("CEP", key=f"buscar_{i}_{ver}"):
+            base = viacep_lookup(cep_val)
+            if base:
+                st.session_state.locais_data[i]["cep"] = format_cep(cep_val)
+                st.session_state.locais_data[i]["endereco_base"] = base
+                st.session_state.locais_version += 1
+                st.toast(f"CEP {format_cep(cep_val)} encontrado!", icon="✅")
+                safe_rerun()
+            else:
+                st.toast("CEP não encontrado ou sem acesso. Preencha manualmente.", icon="⚠️")
 
-            if c_btn.button("CEP", key=f"buscar_{i}_{ver}"):
-                base = viacep_lookup(cep_val)
-                if base:
-                    st.session_state.locais_data[i]["cep"] = format_cep(cep_val)
-                    st.session_state.locais_data[i]["endereco_base"] = base
-                    st.session_state.locais_version += 1
-                    st.toast(f"CEP {format_cep(cep_val)} encontrado!", icon="✅")
-                    safe_rerun()
-                else:
-                    st.toast("CEP não encontrado ou sem acesso. Preencha manualmente.", icon="⚠️")
+        endereco_final_preview = montar_endereco_final(
+            st.session_state.locais_data[i]["endereco_base"],
+            st.session_state.locais_data[i]["numero"],
+            st.session_state.locais_data[i]["complemento"],
+        )
+        c_end.caption(endereco_final_preview if endereco_final_preview else "")
 
-            endereco_final_preview = montar_endereco_final(
-                st.session_state.locais_data[i]["endereco_base"],
-                st.session_state.locais_data[i]["numero"],
-                st.session_state.locais_data[i]["complemento"],
-            )
-            c_end.caption(endereco_final_preview if endereco_final_preview else "")
+# -------- Página 3 --------
+with tabs[2]:
+    st.subheader("Valor em Risco (R$)")
+    st.caption("Total DM = Prédio + MMU + MMP | VR Total = DM + Lucros")
 
-    # -----------------------------
-    # Página 3 - VR (com prefixo R$ no campo)
-    # -----------------------------
-    with tabs[2]:
-        st.subheader("Valor em Risco (R$)")
-        st.caption("Total DM = Prédio + MMU + MMP | VR Total = DM + Lucros")
+    bb1, bb2, bb3 = st.columns([1, 1, 2])
+    with bb1:
+        st.button("➕ +10 linhas VR", on_click=aumentar_locais, kwargs={"mais": 10})
+    with bb2:
+        st.button("➖ -10 linhas VR", on_click=reduzir_locais, kwargs={"menos": 10})
+    with bb3:
+        st.caption(f"Total de linhas (Locais/VR): {st.session_state.n_locais}")
 
-        bb1, bb2, bb3 = st.columns([1, 1, 2])
-        with bb1:
-            st.button("➕ +10 linhas VR", on_click=aumentar_locais, kwargs={"mais": 10})
-        with bb2:
-            st.button("➖ -10 linhas VR", on_click=reduzir_locais, kwargs={"menos": 10})
-        with bb3:
-            st.caption(f"Total de linhas (Locais/VR): {st.session_state.n_locais}")
+    _sync_lists()
+    n = int(st.session_state.n_locais)
 
-        _sync_lists()
-        n = int(st.session_state.n_locais)
+    c0, c1, c2, c3, c4, c5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
+    c0.markdown("**Local**")
+    c1.markdown("**Prédio**")
+    c2.markdown("**MMU**")
+    c3.markdown("**MMP**")
+    c4.markdown("**Total DM**")
+    c5.markdown("**Lucros**")
 
-        c0, c1, c2, c3, c4, c5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
-        c0.markdown("**Local**")
-        c1.markdown("**Prédio**")
-        c2.markdown("**MMU**")
-        c3.markdown("**MMP**")
-        c4.markdown("**Total DM**")
-        c5.markdown("**Lucros**")
+    total_pred = total_mmu = total_mmp = total_dm = total_luc = 0.0
 
-        total_pred = total_mmu = total_mmp = total_dm = total_luc = 0.0
+    for i in range(n):
+        row = st.session_state.vr_data[i]
+        r0, r1, r2, r3, r4, r5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
+        r0.write(f"{i+1:02d}")
 
-        for i in range(n):
-            row = st.session_state.vr_data[i]
-            r0, r1, r2, r3, r4, r5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
-            r0.write(f"{i+1:02d}")
+        pred_key = f"vr_pred_{i}"
+        mmu_key  = f"vr_mmu_{i}"
+        mmp_key  = f"vr_mmp_{i}"
+        luc_key  = f"vr_luc_{i}"
 
-            pred_key = f"vr_pred_{i}"
-            mmu_key  = f"vr_mmu_{i}"
-            mmp_key  = f"vr_mmp_{i}"
-            luc_key  = f"vr_luc_{i}"
+        pred_s = r1.text_input("", value=row.get("predio", "R$ "), key=pred_key,
+                               placeholder="R$ 0,00", on_change=format_money_field, args=(pred_key,))
+        mmu_s  = r2.text_input("", value=row.get("mmu", "R$ "), key=mmu_key,
+                               placeholder="R$ 0,00", on_change=format_money_field, args=(mmu_key,))
+        mmp_s  = r3.text_input("", value=row.get("mmp", "R$ "), key=mmp_key,
+                               placeholder="R$ 0,00", on_change=format_money_field, args=(mmp_key,))
+        luc_s  = r5.text_input("", value=row.get("lucros", "R$ "), key=luc_key,
+                               placeholder="R$ 0,00", on_change=format_money_field, args=(luc_key,))
 
-            pred_s = r1.text_input("", value=row.get("predio", ""), key=pred_key,
-                                   placeholder="R$ 0,00",
-                                   on_change=format_vr_input_keep_prefix, args=(pred_key,))
-            mmu_s  = r2.text_input("", value=row.get("mmu", ""), key=mmu_key,
-                                   placeholder="R$ 0,00",
-                                   on_change=format_vr_input_keep_prefix, args=(mmu_key,))
-            mmp_s  = r3.text_input("", value=row.get("mmp", ""), key=mmp_key,
-                                   placeholder="R$ 0,00",
-                                   on_change=format_vr_input_keep_prefix, args=(mmp_key,))
-            luc_s  = r5.text_input("", value=row.get("lucros", ""), key=luc_key,
-                                   placeholder="R$ 0,00",
-                                   on_change=format_vr_input_keep_prefix, args=(luc_key,))
+        pred = parse_brl_number(pred_s)
+        mmu  = parse_brl_number(mmu_s)
+        mmp  = parse_brl_number(mmp_s)
+        luc  = parse_brl_number(luc_s)
+        dm = pred + mmu + mmp
 
-            pred = parse_brl_number(pred_s)
-            mmu  = parse_brl_number(mmu_s)
-            mmp  = parse_brl_number(mmp_s)
-            luc  = parse_brl_number(luc_s)
-            dm = pred + mmu + mmp
+        st.session_state.vr_data[i]["predio"] = ensure_prefix(pred_s)
+        st.session_state.vr_data[i]["mmu"] = ensure_prefix(mmu_s)
+        st.session_state.vr_data[i]["mmp"] = ensure_prefix(mmp_s)
+        st.session_state.vr_data[i]["lucros"] = ensure_prefix(luc_s)
 
-            st.session_state.vr_data[i]["predio"] = pred_s
-            st.session_state.vr_data[i]["mmu"] = mmu_s
-            st.session_state.vr_data[i]["mmp"] = mmp_s
-            st.session_state.vr_data[i]["lucros"] = luc_s
+        r4.write(fmt_brl_money(dm))
 
-            r4.write(fmt_brl_money(dm))
+        total_pred += pred
+        total_mmu += mmu
+        total_mmp += mmp
+        total_dm += dm
+        total_luc += luc
 
-            total_pred += pred
-            total_mmu += mmu
-            total_mmp += mmp
-            total_dm += dm
-            total_luc += luc
+    st.markdown("---")
+    t0, t1, t2, t3, t4, t5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
+    t0.markdown("**Totais**")
+    t1.markdown(f"**{fmt_brl_money(total_pred)}**")
+    t2.markdown(f"**{fmt_brl_money(total_mmu)}**")
+    t3.markdown(f"**{fmt_brl_money(total_mmp)}**")
+    t4.markdown(f"**{fmt_brl_money(total_dm)}**")
+    t5.markdown(f"**{fmt_brl_money(total_luc)}**")
 
-        st.markdown("---")
-        t0, t1, t2, t3, t4, t5 = st.columns([0.6, 1.3, 1.3, 1.3, 1.4, 1.5])
-        t0.markdown("**Totais**")
-        t1.markdown(f"**{fmt_brl_money(total_pred)}**")
-        t2.markdown(f"**{fmt_brl_money(total_mmu)}**")
-        t3.markdown(f"**{fmt_brl_money(total_mmp)}**")
-        t4.markdown(f"**{fmt_brl_money(total_dm)}**")
-        t5.markdown(f"**{fmt_brl_money(total_luc)}**")
+    vr_total = total_dm + total_luc
+    st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
 
-        vr_total = total_dm + total_luc
-        st.markdown(f"### Valor em Risco Total (DM + Lucros) = **{fmt_brl_money(vr_total)}**")
-
-    submit = st.form_submit_button("Gerar Word")
-
-
-# -----------------------------
-# GERAR WORD (página 1/2/3)
-# -----------------------------
-if submit:
+# =============================
+# GERAR WORD
+# =============================
+if st.button("✅ Gerar Word e baixar"):
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
@@ -542,17 +512,7 @@ if submit:
         if i is not None and cnpj_raw_p1:
             set_cell_text(quote.cell(i, 1), format_cnpj(cnpj_raw_p1))
 
-    # Página 2 - Vigência (corrigida)
-    t_vig = find_table(doc, "IV – Vigência do seguro")
-    if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
-        cell = t_vig.cell(1, 1)
-        clear_cell_keep_format(cell)
-        p1 = cell.add_paragraph(f"Das 24 horas do dia {vig_inicio.strftime('%d/%m/%Y')}")
-        p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        p2 = cell.add_paragraph(f"Às 24 horas do dia {vig_fim.strftime('%d/%m/%Y')}")
-        p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-    # Página 2 - Locais
+    # Página 2 - locais
     t_locais = find_locais_table(doc)
     if t_locais:
         ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
@@ -587,10 +547,10 @@ if submit:
             row_idx = data_start + i
             local_num = f"{i+1:02d}"
 
-            pred = parse_brl_number(st.session_state.vr_data[i].get("predio", ""))
-            mmu  = parse_brl_number(st.session_state.vr_data[i].get("mmu", ""))
-            mmp  = parse_brl_number(st.session_state.vr_data[i].get("mmp", ""))
-            luc  = parse_brl_number(st.session_state.vr_data[i].get("lucros", ""))
+            pred = parse_brl_number(st.session_state.vr_data[i].get("predio", "R$ "))
+            mmu  = parse_brl_number(st.session_state.vr_data[i].get("mmu", "R$ "))
+            mmp  = parse_brl_number(st.session_state.vr_data[i].get("mmp", "R$ "))
+            luc  = parse_brl_number(st.session_state.vr_data[i].get("lucros", "R$ "))
             dm = pred + mmu + mmp
 
             total_pred += pred
@@ -623,7 +583,6 @@ if submit:
                 except Exception:
                     pass
 
-    # Salvar e baixar
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "RN_preenchido.docx")
         doc.save(output_path)
@@ -634,4 +593,3 @@ if submit:
                 file_name="RN_preenchido.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
-``
