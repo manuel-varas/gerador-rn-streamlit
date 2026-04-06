@@ -29,8 +29,9 @@ def _norm(s: str) -> str:
 # =============================
 # STATE (robusto / incremental)
 # =============================
+# ✅ AJUSTE: começa com 1 local (antes: 10)
 if "n_locais" not in st.session_state:
-    st.session_state.n_locais = 10
+    st.session_state.n_locais = 1
 
 if "locais_version" not in st.session_state:
     st.session_state.locais_version = 0
@@ -112,12 +113,13 @@ def _sync_lists():
     elif len(V) > n:
         st.session_state.vr_data = V[:n]
 
-def aumentar_locais(mais=10):
+def aumentar_locais(mais=1):
     st.session_state.n_locais = int(st.session_state.n_locais) + int(mais)
     _sync_lists()
 
-def reduzir_locais(menos=10):
-    st.session_state.n_locais = max(10, int(st.session_state.n_locais) - int(menos))
+def reduzir_locais(menos=1):
+    # ✅ AJUSTE: mínimo agora é 1 (antes: 10)
+    st.session_state.n_locais = max(1, int(st.session_state.n_locais) - int(menos))
     _sync_lists()
 
 # =============================
@@ -415,7 +417,6 @@ def fill_vi_in_word(doc: Document):
 # IX - LMGA (Cobertura | Limite (R$)) — CORRIGIDO (SEM norm())
 # =============================
 def find_lmga_table(doc: Document):
-    # procura uma tabela com "Cobertura" e "Limite" no cabeçalho
     candidates = []
     for t in doc.tables:
         if len(t.rows) < 2:
@@ -425,12 +426,10 @@ def find_lmga_table(doc: Document):
             candidates.append(t)
     if not candidates:
         return None
-    # prioriza a que contém "TOTAL"
     for t in candidates:
         alltxt = " ".join(_norm(c.text).upper() for row in t.rows for c in row.cells)
         if "TOTAL" in alltxt:
             return t
-    # fallback: pega a maior
     return max(candidates, key=lambda x: len(x.rows))
 
 def extract_lmga_from_template():
@@ -548,7 +547,6 @@ def build_docx_bytes():
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
-    # mantém o preenchimento já existente (capa/cotação, seg/cosseg, vigência, locais, VR)
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -681,7 +679,6 @@ def build_docx_bytes():
                 except Exception:
                     pass
 
-    # VI / IX / Cosseguro
     fill_vi_in_word(doc)
     fill_lmga_in_word(doc)
     fill_cosseguro_in_word(doc)
@@ -745,16 +742,25 @@ with tab2:
         st.date_input("Término de vigência", key="vig_fim")
 
     st.subheader("V - Locais em Risco/VR")
-    b1, b2, b3 = st.columns([1, 1, 2])
+    # ✅ AJUSTE: botões +1 / +10 / -1 / -10
+    b1, b2, b3, b4, b5 = st.columns([1, 1, 1, 1, 2])
     with b1:
-        if st.button("➕ +10 locais", key="btn_locais_plus"):
-            aumentar_locais(10)
+        if st.button("➕ +1 local", key="btn_locais_plus_1"):
+            aumentar_locais(1)
             safe_rerun()
     with b2:
-        if st.button("➖ -10 locais", key="btn_locais_minus"):
-            reduzir_locais(10)
+        if st.button("➕ +10 locais", key="btn_locais_plus_10"):
+            aumentar_locais(10)
             safe_rerun()
     with b3:
+        if st.button("➖ -1 local", key="btn_locais_minus_1"):
+            reduzir_locais(1)
+            safe_rerun()
+    with b4:
+        if st.button("➖ -10 locais", key="btn_locais_minus_10"):
+            reduzir_locais(10)
+            safe_rerun()
+    with b5:
         st.caption(f"Total de locais (Locais/VR): {st.session_state.n_locais}")
 
     _sync_lists()
@@ -815,16 +821,25 @@ with tab3:
     st.subheader("Valor em Risco (R$)")
     st.caption("Total DM = Prédio + MMU + MMP | VR Total = DM + Lucros")
 
-    b1, b2, b3 = st.columns([1, 1, 2])
+    # ✅ AJUSTE: botões +1 / +10 / -1 / -10
+    b1, b2, b3, b4, b5 = st.columns([1, 1, 1, 1, 2])
     with b1:
-        if st.button("➕ +10 linhas VR", key="btn_vr_plus"):
-            aumentar_locais(10)
+        if st.button("➕ +1 linha VR", key="btn_vr_plus_1"):
+            aumentar_locais(1)
             safe_rerun()
     with b2:
-        if st.button("➖ -10 linhas VR", key="btn_vr_minus"):
-            reduzir_locais(10)
+        if st.button("➕ +10 linhas VR", key="btn_vr_plus_10"):
+            aumentar_locais(10)
             safe_rerun()
     with b3:
+        if st.button("➖ -1 linha VR", key="btn_vr_minus_1"):
+            reduzir_locais(1)
+            safe_rerun()
+    with b4:
+        if st.button("➖ -10 linhas VR", key="btn_vr_minus_10"):
+            reduzir_locais(10)
+            safe_rerun()
+    with b5:
         st.caption(f"Total de linhas (Locais/VR): {st.session_state.n_locais}")
 
     _sync_lists()
