@@ -118,7 +118,6 @@ def aumentar_locais(mais=1):
     _sync_lists()
 
 def reduzir_locais(menos=1):
-    # ✅ mínimo agora é 1
     st.session_state.n_locais = max(1, int(st.session_state.n_locais) - int(menos))
     _sync_lists()
 
@@ -386,7 +385,7 @@ def extract_vi_from_template():
                 items.append({
                     "secao": secao or "Coberturas",
                     "locais": loc,
-                    "include": False,   # ✅ default desmarcado
+                    "include": False,   # default desmarcado
                     "garantia": gar,
                     "lmi": "R$ ",
                     "pos": pos
@@ -398,9 +397,8 @@ if "coberturas_data" not in st.session_state:
 
 def fill_vi_in_word(doc: Document):
     """
-    ✅ Regra:
-    - include == False  -> remove a linha da tabela VI no Word (não aparece)
-    - include == True   -> preenche LMI / POS (e mantém linha)
+    include == False  -> remove a linha da tabela VI no Word
+    include == True   -> preenche LMI / POS
     """
     t = find_vi_table(doc)
     if not t:
@@ -645,7 +643,7 @@ def build_docx_bytes():
         p2 = cell.add_paragraph(f"Às 24 horas do dia {st.session_state.vig_fim.strftime('%d/%m/%Y')}")
         p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # ✅ LOCAIS: só mantém linhas com endereço (remove vazias no Word)
+    # ✅ LOCAIS: EXCLUI FISICAMENTE linhas sem endereço (Word)
     t_locais = find_locais_table(doc)
     if t_locais:
         valid_idx = []
@@ -654,8 +652,19 @@ def build_docx_bytes():
             if end_base:
                 valid_idx.append(i)
 
+        header_rows = 1
+        total_rows = len(t_locais.rows)
+        data_rows = total_rows - header_rows
+
+        # remove linhas excedentes do fim (de baixo pra cima)
+        while data_rows > len(valid_idx):
+            t_locais._tbl.remove(t_locais.rows[-1]._tr)
+            data_rows -= 1
+
+        # se faltar, cria linhas
         ensure_table_rows_with_style(t_locais, desired_data_rows=len(valid_idx), header_rows=1)
 
+        # preenche e renumera
         for j, i in enumerate(valid_idx):
             row_index = 1 + j
             local_num = f"{j+1:02d}"
@@ -671,7 +680,7 @@ def build_docx_bytes():
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # VR (mantém seu fluxo original com n_locais)
+    # VR
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -1028,7 +1037,7 @@ with tab5:
     h4.markdown("**LMI – R$**")
 
     soma_pct = 0.0
-    soma_lmi = 0.0
+    soma_lmi = 0.0  # ✅ CORRIGIDO
 
     for i, row in enumerate(st.session_state.cosseguro_data):
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.4])
@@ -1054,11 +1063,14 @@ with tab5:
         row["lmi"] = st.session_state[lmi_key]
 
         soma_pct += parse_percent(row["pct"])
-        soma_lmi += parse_brl_number(row["lmi"])
 
-    # ✅ Totais (Percentual + Total LMI abaixo da coluna LMI – R$)
+        # ✅ CORREÇÃO DEFINITIVA DO TOTAL LMI:
+        # soma vem do valor do próprio input (session_state), já formatado.
+        soma_lmi += parse_brl_number(st.session_state.get(lmi_key, "R$ "))
+
     st.markdown(f"**Total informado (%):** {fmt_percent_br(soma_pct)} (no Word a linha Total permanece 100%).")
 
+    # ✅ Total abaixo da coluna LMI – R$
     t1, t2, t3, t4 = st.columns([2.5, 1.2, 1.2, 1.4])
     t1.write("")
     t2.write("")
