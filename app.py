@@ -363,19 +363,6 @@ def find_vi_table(doc: Document):
             return t
     return None
 
-# helpers para seleção de locais na VI
-def locais_options():
-    n = int(st.session_state.n_locais)
-    return [f"{i+1:02d}" for i in range(n)]
-
-def locais_to_text(sel_list):
-    """Converte lista ['01','02'] em texto; lista vazia = Todos."""
-    sel_list = sel_list or []
-    n = int(st.session_state.n_locais)
-    if (len(sel_list) == 0) or (len(sel_list) >= n):
-        return "Todos"
-    return ", ".join(sel_list)
-
 def extract_vi_from_template():
     doc = Document(TEMPLATE)
     t = find_vi_table(doc)
@@ -398,9 +385,8 @@ def extract_vi_from_template():
             if loc and gar:
                 items.append({
                     "secao": secao or "Coberturas",
-                    "locais": loc,        # texto original do modelo (referência)
-                    "locais_sel": [],     # [] = Todos (seleção do usuário)
-                    "include": True,      # default inclui (não quebra o atual)
+                    "locais": loc,
+                    "include": False,   # ✅ DEFAULT DESMARCADO (usuário marca o que precisa)
                     "garantia": gar,
                     "lmi": "R$ ",
                     "pos": pos
@@ -411,6 +397,11 @@ if "coberturas_data" not in st.session_state:
     st.session_state.coberturas_data = extract_vi_from_template()
 
 def fill_vi_in_word(doc: Document):
+    """
+    ✅ Regra:
+    - include == False  -> remove a linha da tabela VI no Word (não aparece)
+    - include == True   -> preenche LMI / POS (e mantém linha)
+    """
     t = find_vi_table(doc)
     if not t:
         return
@@ -434,6 +425,7 @@ def fill_vi_in_word(doc: Document):
         if not gar:
             continue
 
+        # ignora linhas de seção/título dentro da tabela (se existirem)
         upper = gar.upper()
         if "GARANTIA BÁSICA" in upper or "GARANTIAS ADICIONAIS" in upper:
             continue
@@ -441,16 +433,11 @@ def fill_vi_in_word(doc: Document):
         if gar in cov_map:
             item = cov_map[gar]
 
-            # ✅ se não contratado, REMOVE do Word
-            if not item.get("include", True):
+            if not item.get("include", False):
                 rows_to_remove.append(ridx)
                 continue
 
-            # ✅ locais selecionados (ou Todos)
-            loc_txt = locais_to_text(item.get("locais_sel", []))
-            set_cell_text(r.cells[0], loc_txt, 0)
-
-            # ✅ LMI / POS
+            # preenche somente se estiver incluída
             lmi = item.get("lmi", "R$ ")
             pos = item.get("pos", "")
 
@@ -595,6 +582,7 @@ def build_docx_bytes():
     doc = Document(TEMPLATE)
     n = int(st.session_state.n_locais)
 
+    # capa
     cover = find_table(doc, "PROC. Nº")
     if cover:
         i = find_row(cover, "PROC. Nº")
@@ -624,6 +612,7 @@ def build_docx_bytes():
         if i is not None:
             set_cell_text(cover.cell(i, 1), f"{int(st.session_state.paginas)} (incluindo esta capa/including the cover page)")
 
+    # cotação
     quote = find_table(doc, "COTAÇÃO:")
     if quote:
         i = find_row(quote, "COTAÇÃO")
@@ -638,6 +627,7 @@ def build_docx_bytes():
         if i is not None and st.session_state.cnpj_p1:
             set_cell_text(quote.cell(i, 1), format_cnpj(st.session_state.cnpj_p1))
 
+    # pág 2 segurado/cosseg
     t_seg = find_table(doc, "I – Segurado")
     if t_seg and len(t_seg.rows) >= 4 and len(t_seg.columns) >= 2:
         set_cell_text(t_seg.cell(1, 0), st.session_state.segurado_p2)
@@ -645,10 +635,12 @@ def build_docx_bytes():
         set_cell_text(t_seg.cell(3, 0), st.session_state.cossegurados)
         set_cell_text(t_seg.cell(3, 1), format_cnpj(st.session_state.cosseg_cnpj))
 
+    # atividade principal
     t_iii = find_table(doc, "III – Objeto Segurado / Atividade Principal")
     if t_iii and len(t_iii.rows) >= 5:
         set_cell_text(t_iii.cell(4, 0), st.session_state.atividade_principal)
 
+    # vigência
     t_vig = find_table(doc, "IV – Vigência do seguro")
     if t_vig and len(t_vig.rows) >= 2 and len(t_vig.columns) >= 2:
         cell = t_vig.cell(1, 1)
@@ -658,6 +650,7 @@ def build_docx_bytes():
         p2 = cell.add_paragraph(f"Às 24 horas do dia {st.session_state.vig_fim.strftime('%d/%m/%Y')}")
         p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
+    # locais
     t_locais = find_locais_table(doc)
     if t_locais:
         ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
@@ -674,6 +667,7 @@ def build_docx_bytes():
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
+    # VR
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -955,43 +949,25 @@ with tab3:
 # -------- VI Coberturas --------
 with tab4:
     st.subheader("VI - Coberturas, Limites e Franquias por Evento e Local")
-    st.caption("Marque apenas as coberturas contratadas e selecione os locais. As não contratadas NÃO aparecerão no Word.")
+    st.caption("✅ Marque em 'Incluir' apenas o que foi contratado. As coberturas NÃO marcadas NÃO aparecerão no Word.")
 
     if not st.session_state.coberturas_data:
         st.error("Não encontrei a tabela VI no modelo.")
     else:
         secao_atual = None
-        opts_locais = locais_options()
 
         for i, item in enumerate(st.session_state.coberturas_data):
             if item.get("secao") != secao_atual:
                 secao_atual = item.get("secao")
                 st.markdown(f"### {secao_atual}")
 
-            colA, colG, colLMI, colPOS = st.columns([1.2, 3.2, 1.2, 2.2])
+            # ✅ Agora SOMENTE "Incluir" + os campos já existentes (Garantias/LMI/POS)
+            colA, colG, colLMI, colPOS = st.columns([1.0, 3.4, 1.2, 2.2])
 
             inc_key = f"vi_inc_{i}"
-            st.session_state.setdefault(inc_key, item.get("include", True))
+            # ✅ default desmarcado
+            st.session_state.setdefault(inc_key, item.get("include", False))
             incluir = colA.checkbox("Incluir", key=inc_key)
-
-            todos_key = f"vi_todos_{i}"
-            st.session_state.setdefault(todos_key, True if not item.get("locais_sel") else False)
-            todos = colA.checkbox("Todos os locais", key=todos_key)
-
-            locsel_key = f"vi_locsel_{i}"
-            st.session_state.setdefault(locsel_key, item.get("locais_sel", []))
-
-            if todos:
-                st.session_state[locsel_key] = []  # [] = Todos
-                colA.caption("Aplicar em: **Todos**")
-            else:
-                sel = colA.multiselect(
-                    "Selecionar locais",
-                    options=opts_locais,
-                    default=st.session_state[locsel_key],
-                    key=locsel_key
-                )
-                st.session_state[locsel_key] = sel
 
             colG.text_area("Garantias", value=item.get("garantia", ""), disabled=True, height=55, key=f"vi_gar_{i}")
 
@@ -1003,8 +979,8 @@ with tab4:
             st.session_state.setdefault(pos_key, item.get("pos", ""))
             colPOS.text_area("POS/Franquia (R$ / Por Evento)", key=pos_key, height=55)
 
+            # grava no item
             item["include"] = incluir
-            item["locais_sel"] = st.session_state[locsel_key]
             item["lmi"] = st.session_state[lmi_key]
             item["pos"] = st.session_state[pos_key]
 
