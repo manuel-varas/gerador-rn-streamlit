@@ -386,7 +386,7 @@ def extract_vi_from_template():
                 items.append({
                     "secao": secao or "Coberturas",
                     "locais": loc,
-                    "include": False,   # ✅ DEFAULT DESMARCADO (usuário marca o que precisa)
+                    "include": False,   # ✅ default desmarcado
                     "garantia": gar,
                     "lmi": "R$ ",
                     "pos": pos
@@ -406,7 +406,6 @@ def fill_vi_in_word(doc: Document):
     if not t:
         return
 
-    # mapa por garantia
     cov_map = {}
     for item in st.session_state.coberturas_data:
         key = _norm(item.get("garantia"))
@@ -415,7 +414,6 @@ def fill_vi_in_word(doc: Document):
 
     rows_to_remove = []
 
-    # percorre linhas do Word (remove depois)
     for ridx in range(1, len(t.rows)):
         r = t.rows[ridx]
         if len(r.cells) < 4:
@@ -425,7 +423,6 @@ def fill_vi_in_word(doc: Document):
         if not gar:
             continue
 
-        # ignora linhas de seção/título dentro da tabela (se existirem)
         upper = gar.upper()
         if "GARANTIA BÁSICA" in upper or "GARANTIAS ADICIONAIS" in upper:
             continue
@@ -437,19 +434,17 @@ def fill_vi_in_word(doc: Document):
                 rows_to_remove.append(ridx)
                 continue
 
-            # preenche somente se estiver incluída
             lmi = item.get("lmi", "R$ ")
             pos = item.get("pos", "")
 
             set_cell_text(r.cells[2], (lmi if (lmi and lmi.strip() != "R$") else ""), 0)
             set_cell_text(r.cells[3], pos or "", 0)
 
-    # remove de baixo para cima
     for ridx in sorted(rows_to_remove, reverse=True):
         t._tbl.remove(t.rows[ridx]._tr)
 
 # =============================
-# IX - LMGA (Cobertura | Limite (R$)) — CORRIGIDO (SEM norm())
+# IX - LMGA (Cobertura | Limite (R$))
 # =============================
 def find_lmga_table(doc: Document):
     candidates = []
@@ -650,24 +645,33 @@ def build_docx_bytes():
         p2 = cell.add_paragraph(f"Às 24 horas do dia {st.session_state.vig_fim.strftime('%d/%m/%Y')}")
         p2.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
-    # locais
+    # ✅ LOCAIS: só mantém linhas com endereço (remove vazias no Word)
     t_locais = find_locais_table(doc)
     if t_locais:
-        ensure_table_rows_with_style(t_locais, desired_data_rows=n, header_rows=1)
+        valid_idx = []
         for i in range(n):
-            row_index = 1 + i
-            local_num = f"{i+1:02d}"
+            end_base = (st.session_state.locais_data[i].get("endereco_base") or "").strip()
+            if end_base:
+                valid_idx.append(i)
+
+        ensure_table_rows_with_style(t_locais, desired_data_rows=len(valid_idx), header_rows=1)
+
+        for j, i in enumerate(valid_idx):
+            row_index = 1 + j
+            local_num = f"{j+1:02d}"
+
             end_base = (st.session_state.locais_data[i].get("endereco_base") or "").strip()
             numv = (st.session_state.locais_data[i].get("numero") or "").strip()
             comp = (st.session_state.locais_data[i].get("complemento") or "").strip()
-            endereco_final = montar_endereco_final(end_base, numv, comp)
             atv = (st.session_state.locais_data[i].get("atividade") or "").strip()
+
+            endereco_final = montar_endereco_final(end_base, numv, comp)
 
             set_cell_text(t_locais.cell(row_index, 0), local_num)
             set_cell_text(t_locais.cell(row_index, 1), endereco_final)
             set_cell_text(t_locais.cell(row_index, 2), atv)
 
-    # VR
+    # VR (mantém seu fluxo original com n_locais)
     t_vr = find_vr_table(doc)
     if t_vr:
         vr_adjust_rows(t_vr, n)
@@ -729,6 +733,13 @@ def build_docx_bytes():
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
+
+# =============================
+# LIMPAR DADOS
+# =============================
+def limpar_dados():
+    st.session_state.clear()
+    safe_rerun()
 
 # =============================
 # UI TABS
@@ -961,11 +972,9 @@ with tab4:
                 secao_atual = item.get("secao")
                 st.markdown(f"### {secao_atual}")
 
-            # ✅ Agora SOMENTE "Incluir" + os campos já existentes (Garantias/LMI/POS)
             colA, colG, colLMI, colPOS = st.columns([1.0, 3.4, 1.2, 2.2])
 
             inc_key = f"vi_inc_{i}"
-            # ✅ default desmarcado
             st.session_state.setdefault(inc_key, item.get("include", False))
             incluir = colA.checkbox("Incluir", key=inc_key)
 
@@ -979,7 +988,6 @@ with tab4:
             st.session_state.setdefault(pos_key, item.get("pos", ""))
             colPOS.text_area("POS/Franquia (R$ / Por Evento)", key=pos_key, height=55)
 
-            # grava no item
             item["include"] = incluir
             item["lmi"] = st.session_state[lmi_key]
             item["pos"] = st.session_state[pos_key]
@@ -1020,6 +1028,8 @@ with tab5:
     h4.markdown("**LMI – R$**")
 
     soma_pct = 0.0
+    soma_lmi = 0.0
+
     for i, row in enumerate(st.session_state.cosseguro_data):
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.4])
 
@@ -1044,16 +1054,31 @@ with tab5:
         row["lmi"] = st.session_state[lmi_key]
 
         soma_pct += parse_percent(row["pct"])
+        soma_lmi += parse_brl_number(row["lmi"])
 
-    st.markdown(f"**Total informado:** {fmt_percent_br(soma_pct)} (no Word a linha Total permanece 100%).")
+    # ✅ Totais (Percentual + Total LMI abaixo da coluna LMI – R$)
+    st.markdown(f"**Total informado (%):** {fmt_percent_br(soma_pct)} (no Word a linha Total permanece 100%).")
 
-# -------- Gerar / Baixar --------
+    t1, t2, t3, t4 = st.columns([2.5, 1.2, 1.2, 1.4])
+    t1.write("")
+    t2.write("")
+    t3.markdown("**TOTAL LMI:**")
+    t4.text_input("", value=fmt_brl_money(soma_lmi), disabled=True, key="cos_total_lmi_view")
+
+# -------- Limpar / Gerar / Baixar --------
 st.markdown("---")
-if st.button("✅ Gerar Word", key="btn_gerar_word"):
-    st.session_state.generated_docx_bytes = build_docx_bytes()
-    st.toast("Word gerado com sucesso ✅", icon="✅")
+cL, cG = st.columns([1, 3])
 
-if st.session_state.generated_docx_bytes:
+with cL:
+    if st.button("🧹 Limpar dados", key="btn_limpar_dados"):
+        limpar_dados()
+
+with cG:
+    if st.button("✅ Gerar Word", key="btn_gerar_word"):
+        st.session_state.generated_docx_bytes = build_docx_bytes()
+        st.toast("Word gerado com sucesso ✅", icon="✅")
+
+if st.session_state.get("generated_docx_bytes"):
     st.download_button(
         "⬇️ Baixar RN preenchido",
         data=st.session_state.generated_docx_bytes,
