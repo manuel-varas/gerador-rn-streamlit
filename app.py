@@ -8,7 +8,11 @@ import copy
 import io
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
+from docx.table import Table
+from docx.text.paragraph import Paragraph
+from docx.oxml.text.paragraph import CT_P
+from docx.oxml.table import CT_Tbl
 
 # =============================
 # CONFIG
@@ -569,6 +573,291 @@ def fill_cosseguro_in_word(doc: Document):
         set_cell_text(t.cell(row_idx, 3), (lmi if (lmi and lmi.strip() != "R$") else ""))
 
 # =============================
+# X–XIII (Clausulado / Condições + XI + XII + XIII)
+# EXTRAÇÃO DO MODELO + UI SELEÇÃO + APLICAÇÃO NO WORD
+# =============================
+def _table_text(tbl: Table) -> str:
+    try:
+        return _norm(" ".join(_norm(c.text) for row in tbl.rows for c in row.cells))
+    except Exception:
+        return _norm(tbl.cell(0, 0).text if tbl.rows and tbl.rows[0].cells else "")
+
+def _paragraph_is_bold(p: Paragraph) -> bool:
+    # considera subtítulo se houver ao menos 1 run bold e texto não vazio
+    if not _norm(p.text):
+        return False
+    for r in p.runs:
+        if r.bold:
+            return True
+    return False
+
+def _paragraph_has_yellow(p: Paragraph) -> bool:
+    for r in p.runs:
+        try:
+            if r.font and r.font.highlight_color == WD_COLOR_INDEX.YELLOW:
+                return True
+        except Exception:
+            pass
+    return False
+
+def _remove_paragraph(p: Paragraph):
+    try:
+        element = p._element
+        element.getparent().remove(element)
+        element._p = element._element = None
+    except Exception:
+        pass
+
+def iter_block_items(parent):
+    """
+    Itera em ordem real do DOCX (parágrafos e tabelas), sem perder sequência.
+    """
+    parent_elm = parent.element.body
+    for child in parent_elm.iterchildren():
+        if isinstance(child, CT_P):
+            yield Paragraph(child, parent)
+        elif isinstance(child, CT_Tbl):
+            yield Table(child, parent)
+
+def _roman_title_from_text(txt: str) -> str:
+    """
+    Extrai títulos tipo 'X – Clausulado / Condições' do texto de célula.
+    """
+    t = _norm(txt)
+    if not t:
+        return ""
+    m = re.search(r"\b(X|XI|XII|XIII|XIV)\s*[–-]\s*.+", t, flags=re.IGNORECASE)
+    if m:
+        return _norm(m.group(0))
+    return ""
+
+def extract_x_to_xiii_from_template():
+    """
+    Lê o MODELO e devolve estrutura:
+    [
+      {titulo: 'X – ...', subtitulos: [
+          {nome:'Condições Gerais', include:True, itens:[
+              {texto:'...', include:False/True, mandatory:bool}
+          ]}
+      ]}
+    ]
+    - obrigatório = highlight amarelo no Word
+    - default include = True para obrigatório; False para o resto
+    """
+    doc = Document(TEMPLATE)
+    data = []
+    started = False
+    current = None
+    current_sub = None
+
+    def _ensure_sub(title_obj, sub_name):
+        for s in title_obj["subtitulos"]:
+            if s["nome"] == sub_name:
+                return s
+        s = {"nome": sub_name, "include": True, "itens": []}
+        title_obj["subtitulos"].append(s)
+        return s
+
+    for block in iter_block_items(doc):
+        if isinstance(block, Table):
+            tt = _table_text(block)
+            ttl = _roman_title_from_text(tt)
+            if ttl:
+                ttl_up = ttl.upper()
+                if "X –" in ttl_up or ttl_up.startswith("X-") or ttl_up.startswith("X –") or ttl_up.startswith("X -"):
+                    started = True
+                if not started:
+                    continue
+
+                # para em XIV
+                if ttl_up.startswith("XIV"):
+                    break
+
+                # só processa X, XI, XII, XIII
+                if ttl_up.startswith("X") or ttl_up.startswith("XI") or ttl_up.startswith("XII") or ttl_up.startswith("XIII"):
+                    current = {"titulo": ttl, "subtitulos": []}
+                    data.append(current)
+                    current_sub = None
+            continue
+
+        # parágrafo
+        if not started or current is None:
+            continue
+
+        ptxt = _norm(block.text)
+        if not ptxt:
+            continue
+
+        if _paragraph_is_bold(block):
+            current_sub = ptxt
+            _ensure_sub(current, current_sub)
+        else:
+            # cláusula/linha normal
+            sub_name = current_sub or "(Sem subtítulo)"
+            sub = _ensure_sub(current, sub_name)
+            mandatory = _paragraph_has_yellow(block)
+            sub["itens"].append({
+                "texto": ptxt,
+                "mandatory": bool(mandatory),
+                "include": True if mandatory else False
+            })
+
+    return data
+
+if "clausulado_data" not in st.session_state:
+    try:
+        st.session_state.clausulado_data = extract_x_to_xiii_from_template()
+    except Exception:
+        st.session_state.clausulado_data = []
+
+def _clausulado_build_map():
+    """
+    Cria mapa rápido para consulta:
+    mp[ titulo_norm ][ subtitulo_norm ][ texto_norm ] = {include, mandatory}
+    e também include do subtítulo.
+    """
+    mp = {}
+    for t in st.session_state.get("clausulado_data", []):
+        tn = _norm(t.get("titulo"))
+        mp.setdefault(tn, {"subtitles": {}})
+        for s in t.get("subtitulos", []):
+            sn = _norm(s.get("nome"))
+            mp[tn]["subtitles"].setdefault(sn, {"include": bool(s.get("include", True)), "items": {}})
+            mp[tn]["subtitles"][sn]["include"] = bool(s.get("include", True))
+            for it in s.get("itens", []):
+                tx = _norm(it.get("texto"))
+                mp[tn]["subtitles"][sn]["items"][tx] = {
+                    "include": bool(it.get("include", False)),
+                    "mandatory": bool(it.get("mandatory", False))
+                }
+    return mp
+
+def fill_x_to_xiii_in_word(doc: Document):
+    """
+    Remove do Word, fisicamente, os parágrafos não selecionados entre X e XIII.
+    - Amarelo (mandatory) sempre fica.
+    - Se o subtítulo estiver desmarcado, remove o subtítulo e todas as cláusulas não obrigatórias.
+    - Mantém subtítulo se existir ao menos 1 cláusula mantida abaixo dele (ou obrigatória).
+    """
+    mp = _clausulado_build_map()
+
+    started = False
+    current_title = None
+
+    # buffer por título: grupos por subtítulo
+    groups = []
+    current_group = {"sub_para": None, "sub_text": "(Sem subtítulo)", "paras": []}
+
+    def flush_groups():
+        nonlocal groups
+        # processa e remove
+        to_remove = []
+
+        for g in groups:
+            sub_text = _norm(g.get("sub_text"))
+            sub_para = g.get("sub_para", None)
+            paras = g.get("paras", [])
+
+            # seleção do subtítulo
+            title_key = _norm(current_title or "")
+            sub_include = True
+            if title_key in mp:
+                sub_info = mp[title_key]["subtitles"].get(sub_text)
+                if sub_info is not None:
+                    sub_include = bool(sub_info.get("include", True))
+
+            # decide quais cláusulas ficam
+            keep_any = False
+            for (pobj, txt, mandatory_flag) in paras:
+                txtn = _norm(txt)
+                keep = False
+
+                if mandatory_flag:
+                    keep = True
+                else:
+                    if sub_include:
+                        # busca seleção individual
+                        keep = False
+                        if title_key in mp:
+                            sub_info = mp[title_key]["subtitles"].get(sub_text)
+                            if sub_info is not None:
+                                it = sub_info["items"].get(txtn)
+                                if it is not None and bool(it.get("include", False)):
+                                    keep = True
+
+                if not keep:
+                    to_remove.append(pobj)
+                else:
+                    keep_any = True
+
+            # subtítulo
+            if sub_para is not None:
+                # mantém se: (a) há algo abaixo que fica, OU (b) subtítulo marcado explicitamente e tem itens obrigatórios/selecionados
+                if not keep_any:
+                    # se não tem nenhuma cláusula mantida, remove o subtítulo também
+                    to_remove.append(sub_para)
+                else:
+                    # se subtítulo estava desmarcado mas existe obrigatório mantido, mantém subtítulo (não remove)
+                    # (não faz nada)
+                    pass
+
+        # remove no final
+        for p in to_remove:
+            _remove_paragraph(p)
+
+        groups = []
+
+    for block in iter_block_items(doc):
+        if isinstance(block, Table):
+            tt = _table_text(block)
+            ttl = _roman_title_from_text(tt)
+            if ttl:
+                ttl_up = ttl.upper()
+
+                if not started:
+                    if ttl_up.startswith("X") and ("CLAUSULADO" in ttl_up or ttl_up.startswith("X –") or ttl_up.startswith("X -") or ttl_up.startswith("X-")):
+                        started = True
+                        current_title = ttl
+                        groups = []
+                        current_group = {"sub_para": None, "sub_text": "(Sem subtítulo)", "paras": []}
+                    continue
+
+                # se já começou: ao achar novo título
+                if ttl_up.startswith("XIV"):
+                    # fim do intervalo
+                    # flush último título
+                    if current_title is not None:
+                        # inclui último grupo
+                        groups.append(current_group)
+                        flush_groups()
+                    break
+
+                # mudou o título (X, XI, XII, XIII)
+                if ttl_up.startswith("X") or ttl_up.startswith("XI") or ttl_up.startswith("XII") or ttl_up.startswith("XIII"):
+                    if current_title is not None:
+                        groups.append(current_group)
+                        flush_groups()
+                    current_title = ttl
+                    current_group = {"sub_para": None, "sub_text": "(Sem subtítulo)", "paras": []}
+            continue
+
+        # parágrafos entre X e XIII
+        if not started or current_title is None:
+            continue
+
+        ptxt = _norm(block.text)
+        if not ptxt:
+            continue
+
+        if _paragraph_is_bold(block):
+            # novo subtítulo: guarda grupo anterior
+            groups.append(current_group)
+            current_group = {"sub_para": block, "sub_text": ptxt, "paras": []}
+        else:
+            mandatory = _paragraph_has_yellow(block)
+            current_group["paras"].append((block, ptxt, mandatory))
+
+# =============================
 # GERAR WORD (mantém seu fluxo)
 # =============================
 def build_docx_bytes():
@@ -739,6 +1028,9 @@ def build_docx_bytes():
     fill_lmga_in_word(doc)
     fill_cosseguro_in_word(doc)
 
+    # ✅ NOVO: X–XIII (Clausulado/Condições/Exclusões) — aplica seleção
+    fill_x_to_xiii_in_word(doc)
+
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
@@ -757,12 +1049,13 @@ if not os.path.exists(TEMPLATE):
     st.error(f"Arquivo '{TEMPLATE}' não encontrado no repositório.")
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "Página 1 - Capa/Cotação",
     "Página 2 - Segurado/Vigência/Locais",
     "Página 3 - Valor em Risco (R$)",
     "Páginas 4–8 - Coberturas (VI)",
-    "Página 9 - LMGA + Cosseguro"
+    "Página 9 - LMGA + Cosseguro",
+    "Páginas 10–20 - Clausulado / Exclusões (X–XIII)"
 ])
 
 _sync_lists()
@@ -1037,7 +1330,7 @@ with tab5:
     h4.markdown("**LMI – R$**")
 
     soma_pct = 0.0
-    soma_lmi = 0.0  # ✅ CORRIGIDO
+    soma_lmi = 0.0  # ✅ CORRIGIDO (mantido)
 
     for i, row in enumerate(st.session_state.cosseguro_data):
         c1, c2, c3, c4 = st.columns([2.5, 1.2, 1.2, 1.4])
@@ -1064,18 +1357,63 @@ with tab5:
 
         soma_pct += parse_percent(row["pct"])
 
-        # ✅ CORREÇÃO DEFINITIVA DO TOTAL LMI:
-        # soma vem do valor do próprio input (session_state), já formatado.
+        # ✅ CORREÇÃO DEFINITIVA DO TOTAL LMI (mantida como você pediu)
         soma_lmi += parse_brl_number(st.session_state.get(lmi_key, "R$ "))
 
     st.markdown(f"**Total informado (%):** {fmt_percent_br(soma_pct)} (no Word a linha Total permanece 100%).")
 
-    # ✅ Total abaixo da coluna LMI – R$
+    # ✅ Total abaixo da coluna LMI – R$ (mantido)
     t1, t2, t3, t4 = st.columns([2.5, 1.2, 1.2, 1.4])
     t1.write("")
     t2.write("")
     t3.markdown("**TOTAL LMI:**")
     t4.text_input("", value=fmt_brl_money(soma_lmi), disabled=True, key="cos_total_lmi_view")
+
+# -------- NOVA PÁGINA: X–XIII --------
+with tab6:
+    st.subheader("X–XIII — Clausulado / Condições + Cláusulas Particulares + Exclusões")
+    st.caption("✅ Se estiver em amarelo no Word = obrigatório (fica travado). Marque o que deseja incluir no documento final.")
+
+    if not st.session_state.get("clausulado_data"):
+        st.warning("Não consegui ler X–XIII do modelo. Verifique se o MODELO RN (1).docx é o correto e contém essas seções.")
+    else:
+        for ti, t in enumerate(st.session_state.clausulado_data):
+            titulo = t.get("titulo", "")
+            st.markdown(f"## {titulo}")
+
+            for si, s in enumerate(t.get("subtitulos", [])):
+                subnome = s.get("nome", "(Sem subtítulo)")
+                exp = st.expander(f"{subnome}", expanded=False)
+
+                with exp:
+                    sub_key = f"xsub_inc_{ti}_{si}"
+                    st.session_state.setdefault(sub_key, bool(s.get("include", True)))
+                    sub_inc = st.checkbox("Incluir subtítulo", key=sub_key)
+
+                    s["include"] = sub_inc
+
+                    for ii, it in enumerate(s.get("itens", [])):
+                        texto = it.get("texto", "")
+                        mandatory = bool(it.get("mandatory", False))
+                        default_val = True if mandatory else bool(it.get("include", False))
+
+                        item_key = f"xitem_{ti}_{si}_{ii}"
+                        st.session_state.setdefault(item_key, default_val)
+
+                        disabled = False
+                        if mandatory:
+                            disabled = True
+                            st.session_state[item_key] = True
+                        else:
+                            if not sub_inc:
+                                disabled = True  # desabilita itens se subtítulo desligado
+
+                        label = texto
+                        if mandatory:
+                            label = f"🟨 OBRIGATÓRIA — {texto}"
+
+                        inc_val = st.checkbox(label, key=item_key, disabled=disabled)
+                        it["include"] = True if mandatory else bool(inc_val)
 
 # -------- Limpar / Gerar / Baixar --------
 st.markdown("---")
@@ -1097,3 +1435,4 @@ if st.session_state.get("generated_docx_bytes"):
         file_name="RN_preenchido.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
+``
