@@ -605,6 +605,26 @@ def _remove_paragraph(p: Paragraph):
         element._p = element._element = None
     except Exception:
         pass
+def remove_extra_blank_paragraphs(doc: Document):
+    """
+    Remove parágrafos vazios consecutivos no Word,
+    mantendo no máximo 1.
+    Evita espaçamento excessivo e páginas quase vazias.
+    """
+    prev_blank = False
+    for p in list(doc.paragraphs):
+        txt = (p.text or "").strip()
+        is_blank = (txt == "")
+
+        if is_blank and prev_blank:
+            try:
+                element = p._element
+                element.getparent().remove(element)
+                element._p = element._element = None
+            except Exception:
+                pass
+        else:
+            prev_blank = is_blank       
 
 def iter_block_items(doc: Document):
     body = doc.element.body
@@ -801,6 +821,8 @@ def fill_x_to_xiii_in_word(doc: Document):
     if started and current_title is not None:
         groups.append(current_group)
         flush_current_title(current_title, groups)
+    
+    remove_extra_blank_paragraphs(doc)    
 
 # =============================
 # GERAR WORD (mantém seu fluxo)
